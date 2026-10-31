@@ -3,7 +3,7 @@ name: "Sync SUSFS4KSU Mirror"
 on:
   workflow_dispatch: # Mengizinkan tombol jalankan manual
   schedule:
-    - cron: "0 0 * * 0" # Berjalan otomatis setiap hari Minggu (opsional)
+    - cron: "0 15 * * 6" 
 
 jobs:
   mirror-susfs:
