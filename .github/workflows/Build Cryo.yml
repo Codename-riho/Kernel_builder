@@ -718,9 +718,9 @@ jobs:
             SukiSU-Ultra+KPM)       REPO="SukiSU-Ultra/SukiSU-Ultra";   SETUP_BRANCH=main;        DEFAULT_REF=builtin;         NEED_SUSFS_PATCH=0 ;;
             SukiSU-Ultra-susfs)     REPO="SukiSU-Ultra/SukiSU-Ultra";   SETUP_BRANCH=main;        DEFAULT_REF=susfs_new;       NEED_SUSFS_PATCH=0 ;;
             KernelSU-Next-pershoot) REPO="pershoot/KernelSU-Next";      SETUP_BRANCH=dev-susfs;   DEFAULT_REF=dev-susfs;       NEED_SUSFS_PATCH=0; EXTRA_PATCH_URL="$MULTI_MANAGER_PATCH" ;;
-            KernelSU-Official)      REPO="tiann/KernelSU";              SETUP_BRANCH=main;        DEFAULT_REF="";              NEED_SUSFS_PATCH=0;;
-            KowSU)                  REPO="KOWX712/KernelSU";            SETUP_BRANCH=main;        DEFAULT_REF=master;          NEED_SUSFS_PATCH=0;;
-            MamboSU)                REPO="RapliVx/KernelSU";            SETUP_BRANCH=master;      DEFAULT_REF="";              NEED_SUSFS_PATCH=0;;
+            KernelSU-Official)      REPO="tiann/KernelSU";              SETUP_BRANCH=main;        DEFAULT_REF="";              NEED_SUSFS_PATCH=1;;
+            KowSU)                  REPO="KOWX712/KernelSU";            SETUP_BRANCH=main;        DEFAULT_REF=master;          NEED_SUSFS_PATCH=1;;
+            MamboSU)                REPO="RapliVx/KernelSU";            SETUP_BRANCH=master;      DEFAULT_REF="";              NEED_SUSFS_PATCH=1;;
             *) die "Fatal Error: Varian manager tidak dikenal: $KSU_MANAGER" ;;
           esac
 
