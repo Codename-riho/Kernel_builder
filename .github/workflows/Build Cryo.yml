@@ -732,7 +732,7 @@ jobs:
                NEED_SUSFS_PATCH=0
             fi
 
-            REPO_URL="https://github.com/${REPO}.git"
+          REPO_URL="https://github.com/${REPO}.git"
 
           # Branch tempat setup.sh berada harus ada; jika tidak, pakai branch default repo
           if ! git ls-remote --exit-code --heads "$REPO_URL" "$SETUP_BRANCH" >/dev/null 2>&1; then
@@ -741,6 +741,8 @@ jobs:
             echo "::warning::Branch setup '$SETUP_BRANCH' tidak ada di $REPO, memakai '$DEF_BR'"
             SETUP_BRANCH="$DEF_BR"
           fi
+
+          REF="${KSU_REF:-$DEFAULT_REF}"
 
           # setup.sh memakai `git checkout "$1" || echo default`: ref yang salah TIDAK error,
           # hanya diam-diam memakai branch default. Cek dulu supaya tidak salah build.
@@ -754,7 +756,6 @@ jobs:
             REF=""
           fi
 
-          REF="${KSU_REF:-$DEFAULT_REF}"
           SETUP_URL="https://raw.githubusercontent.com/${REPO}/${SETUP_BRANCH}/kernel/setup.sh"
           echo "Manager: $KSU_MANAGER | ref: ${REF:-latest release tag}"
           echo "Setup script: $SETUP_URL"
