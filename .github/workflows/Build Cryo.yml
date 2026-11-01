@@ -718,9 +718,9 @@ jobs:
             SukiSU-Ultra+KPM)       REPO="SukiSU-Ultra/SukiSU-Ultra";   SETUP_BRANCH=main;        DEFAULT_REF=builtin;         NEED_SUSFS_PATCH=0 ;;
             SukiSU-Ultra-susfs)     REPO="SukiSU-Ultra/SukiSU-Ultra";   SETUP_BRANCH=main;        DEFAULT_REF=susfs_new;       NEED_SUSFS_PATCH=0 ;;
             KernelSU-Next-pershoot) REPO="pershoot/KernelSU-Next";      SETUP_BRANCH=dev-susfs;   DEFAULT_REF=dev-susfs;       NEED_SUSFS_PATCH=0; EXTRA_PATCH_URL="$MULTI_MANAGER_PATCH" ;;
-            KernelSU-Official)      REPO="tiann/KernelSU";              SETUP_BRANCH=main;        DEFAULT_REF="";              NEED_SUSFS_PATCH=1;;
-            KowSU)                  REPO="KOWX712/KernelSU";            SETUP_BRANCH=main;        DEFAULT_REF=master;          NEED_SUSFS_PATCH=1;;
-            MamboSU)                REPO="RapliVx/KernelSU";            SETUP_BRANCH=master;      DEFAULT_REF="";              NEED_SUSFS_PATCH=1;;
+            KernelSU-Official)      REPO="tiann/KernelSU";              SETUP_BRANCH=main;        DEFAULT_REF="";              NEED_SUSFS_PATCH=1 ;;
+            KowSU)                  REPO="KOWX712/KernelSU";            SETUP_BRANCH=main;        DEFAULT_REF=master;          NEED_SUSFS_PATCH=0 ;;
+            MamboSU)                REPO="RapliVx/KernelSU";            SETUP_BRANCH=master;      DEFAULT_REF="";              NEED_SUSFS_PATCH=0 ;;
             *) die "Fatal Error: Varian manager tidak dikenal: $KSU_MANAGER" ;;
           esac
 
@@ -732,7 +732,7 @@ jobs:
                NEED_SUSFS_PATCH=0
             fi
 
-                      REPO_URL="https://github.com/${REPO}.git"
+            REPO_URL="https://github.com/${REPO}.git"
 
           # Branch tempat setup.sh berada harus ada; jika tidak, pakai branch default repo
           if ! git ls-remote --exit-code --heads "$REPO_URL" "$SETUP_BRANCH" >/dev/null 2>&1; then
@@ -842,6 +842,7 @@ jobs:
         env:
           KSU_MANAGER: ${{ inputs.ksu_manager || 'BakaSU' }}
           DEFCONFIG_NAME: ${{ env.DEFCONFIG_NAME }}
+          VARIANT_NAME: ${{ matrix.kernel.name }}
         run: |
           set -euo pipefail
           die() { echo "::error::$*"; exit 1; }
@@ -899,10 +900,16 @@ jobs:
 
           VER=$(git -C "$KSU_DIR" describe --tags --always 2>/dev/null || echo Unknown)
           echo "✅ $KSU_MANAGER setup selesai dengan versi: $VER"
-          {
-            echo "- Root manager: **$KSU_MANAGER** ($VER)"
-            if [ -n "$KPM_STATE" ]; then echo "- KPM: $KPM_STATE"; fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          
+          # Detail KSU untuk ringkasan akhir (job "Package Kernels")
+          # Format: varian|manager|ref|versi|kpm|susfs|patch-ekstra
+          if [ "${SUSFS_SUPPORT:-Disabled}" != "Enabled" ]; then SUSFS_TXT="nonaktif"
+          elif [ "${NEED_SUSFS_PATCH:-0}" = "1" ]; then SUSFS_TXT="patch manual"
+          else SUSFS_TXT="bawaan"; fi
+          EXTRA_TXT="tidak ada"
+          [ -z "${EXTRA_PATCH_URL:-}" ] || EXTRA_TXT="$(basename "${EXTRA_PATCH_URL%%\?*}")"
+          echo "${VARIANT_NAME}|${KSU_MANAGER}|${KSU_REF_USED:-?}|${VER}|${KPM_STATE}|${SUSFS_TXT}|${EXTRA_TXT}" \
+            > "$WORK_DIR/ksu_info.txt"
           
       - name: "ඞ Inject SUSFS Integration"
         if: ${{ matrix.kernel.enable_ksu == true && env.SUSFS_SUPPORT == 'Enabled' }}
@@ -1208,6 +1215,7 @@ jobs:
           DS_PASSES: 3            # jumlah pass penegasan; jeda tiap pass digandakan
           DS_STAT_SEC: 5          # vm.stat_interval (detik)
           DS_DIRTY_WB_CS: 1500    # vm.dirty_writeback_centisecs
+          VARIANT_NAME: ${{ matrix.kernel.name }}
         run: |
           set -euo pipefail
 
@@ -1234,6 +1242,7 @@ jobs:
           echo "sysctl_stat_interval: ${STAT_T:-tidak ada} | dirty_writeback_interval: $HAS_WB"
           if (( HAS_STAT + HAS_WB == 0 )); then
             echo "::warning::tidak ada simbol yang cocok di tree ini; Deep Sleep dilewati"
+            echo "${VARIANT_NAME}|dilewati|dilewati|0|0" > "$WORK_DIR/deepsleep_info.txt"
             exit 0
           fi
 
@@ -1379,16 +1388,9 @@ jobs:
           if (( HAS_STAT )); then STAT_TXT="${DS_STAT_SEC}s (default di sumber: ${DEF_STAT})"; fi
           if (( HAS_WB ));   then WB_TXT="${DS_DIRTY_WB_CS}cs (default di sumber: ${DEF_WB})"; fi
 
-          {
-            echo "### 💤 Deep Sleep (built-in)"
-            echo "| Komponen | Nilai |"
-            echo "|---|---|"
-            echo "| vm.stat_interval | ${STAT_TXT} |"
-            echo "| vm.dirty_writeback_centisecs | ${WB_TXT} |"
-            echo "| Penegas runtime | ${DS_PASSES} pass, mulai +${DS_DELAY_SEC}s, jeda berlipat ganda |"
-            echo ""
-            echo "Verifikasi di perangkat: \`dmesg | grep cryo_deepsleep\`"
-          } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          # Detail Deep Sleep untuk ringkasan akhir (job "Package Kernels")
+          # Format: varian|stat_interval|dirty_writeback|jumlah-pass|jeda-awal
+          echo "${VARIANT_NAME}|${STAT_TXT}|${WB_TXT}|${DS_PASSES}|${DS_DELAY_SEC}" > "$WORK_DIR/deepsleep_info.txt"
 
           echo "✅ cryo_deepsleep terpasang | stat_interval: ${STAT_TXT} | dirty_writeback: ${WB_TXT} | pass: ${DS_PASSES} mulai +${DS_DELAY_SEC}s"
           echo "ℹ️  Cek di perangkat: dmesg | grep cryo_deepsleep"
@@ -1542,7 +1544,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: config-check-${{ matrix.kernel.name }}
-          path: ${{ env.WORK_DIR }}/config_check.txt
+          path: |
+            ${{ env.WORK_DIR }}/config_check.txt
+            ${{ env.WORK_DIR }}/ksu_info.txt
+            ${{ env.WORK_DIR }}/deepsleep_info.txt
           retention-days: 1
           if-no-files-found: ignore
           
@@ -1609,7 +1614,10 @@ jobs:
           VARIANTS=$(find ./artifacts -mindepth 1 -maxdepth 1 -type d -name '*-kernel' -printf '%f\n' 2>/dev/null \
             | sed 's/-kernel$//' | sort | paste -sd, - | sed 's/,/, /g')
           CHECKS=$(find ./artifacts -type f -name config_check.txt 2>/dev/null | sort)
+          KSU_INFOS=$(find ./artifacts -type f -name ksu_info.txt 2>/dev/null | sort)
+          DS_INFOS=$(find ./artifacts -type f -name deepsleep_info.txt 2>/dev/null | sort)
           {
+            # ── 1. Cek .config akhir ──────────────────────────────────────────
             echo "### 🧩 Kernel Configuration"
             if [ -z "$CHECKS" ]; then
               echo "✅ Konfigurasi berhasil diterapkan: ${VARIANTS:-tidak ada varian terdeteksi}"
@@ -1635,8 +1643,45 @@ jobs:
                   }
                 }'
             fi
-          } >> "$GITHUB_STEP_SUMMARY"
 
+            # ── 2. Detail KSU (varian dengan nilai sama digabung satu baris) ──
+            if [ -n "$KSU_INFOS" ]; then
+              echo
+              echo "### 🔑 KernelSU"
+              # shellcheck disable=SC2086
+              cat $KSU_INFOS | awk -F'|' '
+                { key=$2 "|" $3 "|" $4 "|" $5 "|" $6 "|" $7
+                  if (!(key in vars)) order[++n]=key
+                  vars[key]=vars[key] (vars[key]==""?"":", ") $1 }
+                END {
+                  print "| Varian | Manager | Ref | Versi | KPM | SUSFS | Patch ekstra |"
+                  print "|---|---|---|---|---|---|---|"
+                  for (i=1;i<=n;i++) { split(order[i], p, "|")
+                    printf "| %s | %s | %s | %s | %s | %s | %s |\n", vars[order[i]], p[1], p[2], p[3], (p[4]==""?"—":p[4]), p[5], p[6] }
+                }'
+            fi
+
+            # ── 3. Deep Sleep (hanya jika dipasang) ───────────────────────────
+            if [ -n "$DS_INFOS" ]; then
+              echo
+              echo "### 💤 Deep Sleep (built-in)"
+              # shellcheck disable=SC2086
+              cat $DS_INFOS | awk -F'|' '
+                { key=$2 "|" $3 "|" $4 "|" $5
+                  if (!(key in vars)) order[++n]=key
+                  vars[key]=vars[key] (vars[key]==""?"":", ") $1 }
+                END {
+                  print "| Varian | vm.stat_interval | vm.dirty_writeback_centisecs | Penegas runtime |"
+                  print "|---|---|---|---|"
+                  for (i=1;i<=n;i++) { split(order[i], p, "|")
+                    rt = (p[3]+0 > 0) ? p[3] " pass, mulai +" p[4] "s, jeda berlipat ganda" : "—"
+                    printf "| %s | %s | %s | %s |\n", vars[order[i]], p[1], p[2], rt }
+                }'
+              echo
+              echo 'Verifikasi di perangkat: `dmesg | grep cryo_deepsleep`'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      
       - name: "📦 Create release package"
         if: needs.build-kernels.result == 'success'
         run: |
