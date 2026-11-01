@@ -242,37 +242,30 @@ jobs:
             }
           done
 
-      - name: "🦎 Safe Kernel Version Spoof"
-        working-directory: ./${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
+      - name: "🦎 Set Kernel Version Spoofing"
+        if: ${{ github.event.inputs.kernelSpoofVersion != '' }}
+        working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
+        env:
+          SPOOF_VERSION: ${{ github.event.inputs.kernelSpoofVersion }}
         run: |
-          echo "🔧 Starting dynamic kernel version spoof..."
-          
-          SPOOF_VERSION="${{ github.event.inputs.kernelSpoofVersion }}"
-          LOCAL_VERSION="${{ github.event.matrix.ksu }}"
-          FULL_VERSION="${SPOOF_VERSION}${LOCAL_VERSION}"
-          
-          if [ -z "$SPOOF_VERSION" ]; then
-            echo "⚠️ No spoof version provided. Using default source version."
-          else
-            echo "➡️ Target Full Version: $FULL_VERSION"
+          set -euo pipefail
 
-            # 1. Hardcode KERNELVERSION including the local suffix
-            sed -i "s/^KERNELVERSION =.*/KERNELVERSION = $FULL_VERSION/" Makefile
-            
-            # 2. Force configuration overrides in defconfig
-            CONFIG_FILE="arch/arm64/configs/${{ env.DEFCONFIG_NAME }}"
-            # Set localversion
-            if [ -n "${{ github.event.inputs.localVersion }}" ]; then
-               echo "CONFIG_LOCALVERSION=\"${{ github.event.inputs.localVersion }}\"" >> "$CONFIG_FILE"
-            fi
-            
-            # 3. Update build constants for GKI
-            if [ -f "build.config.constants" ]; then
-                sed -i "s/^KERNEL_VERSION=.*/KERNEL_VERSION=$FULL_VERSION/" build.config.constants
-            fi
-
-            echo "✅ Spoof applied successfully. Final name: $FULL_VERSION"
+          if ! [[ "$SPOOF_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::kernelSpoofVersion harus berformat X.Y.Z (contoh 5.15.178), dapat: '$SPOOF_VERSION'"
+            exit 1
           fi
+
+          REAL=$(awk '/^(VERSION|PATCHLEVEL|SUBLEVEL) =/{print $3}' Makefile | head -3 | paste -sd.)
+          grep -q '^KERNELVERSION = ' Makefile \
+            || { echo "::error::Baris KERNELVERSION tidak ditemukan di Makefile"; exit 1; }
+
+          # Hanya versi dasar. Suffix -Cryo-XXX-tanggal tetap dari scripts/setlocalversion.
+          sed -i "s|^KERNELVERSION = .*|KERNELVERSION = ${SPOOF_VERSION}|" Makefile
+          grep -q "^KERNELVERSION = ${SPOOF_VERSION}\$" Makefile \
+            || { echo "::error::Spoof gagal diterapkan"; exit 1; }
+
+          echo "SPOOF_VERSION_APPLIED=${SPOOF_VERSION}" >> "$GITHUB_ENV"
+          echo "✅ ${REAL} → ${SPOOF_VERSION}${{ env.LOCAL_VERSION }}-${{ env.BUILD_TIME }} (uname -r)"
             
       - name: "📥 Initialize AOSP repo and toolchains"
         if: ${{ env.TOOLCHAIN_TYPE == 'android-tools' }}
@@ -1848,6 +1841,7 @@ jobs:
           TOOLCHAIN_TYPE: ${{ inputs.toolchain_type || 'android-tools' }}
           CUSTOM_CLANG_REPO: ${{ inputs.customClangRepo }}
           DEVICE_NAME: "Redmi Note 12 4G"
+          SPOOF_INPUT: ${{ github.event.inputs.kernelSpoofVersion }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -uo pipefail
@@ -1891,6 +1885,9 @@ jobs:
             DROIDSPACES_TEXT="Enabled Proper Working"; fi
 
           MANAGER=$(printf '%s' "$KSU_MANAGER${KSU_REF:+ @ $KSU_REF}" | esc)
+          
+          KVER_SHOW="${KERNEL_VERSION}"
+          [ -n "${SPOOF_INPUT:-}" ] && KVER_SHOW="${KERNEL_VERSION} (spoof: $(printf '%s' "$SPOOF_INPUT" | esc))"
 
           if [ "$TOOLCHAIN_TYPE" = "custom-tools" ]; then
             BUILD_TOOLS="custom-tools (${CUSTOM_CLANG_REPO:-unknown})"
@@ -1909,7 +1906,7 @@ jobs:
             MSG="✅ <b>Kernel Build Successful</b>
 
           <b>📦 Build Information:</b>
-          • Kernel: <code>Linux ${KERNEL_VERSION}</code>
+          • Kernel: <code>Linux ${KVER_SHOW}</code>
           • Android: <code>13-16</code>
           • Branch: <code>android13-5.15-lts</code> (GKI), <code>kernel.lnx.5.15.r16-rel</code> (CLO)
           • Device: <code>${DEVICE_NAME}</code>
@@ -1941,7 +1938,7 @@ jobs:
             MSG="❌ <b>Kernel Build Failed</b>
 
           <b>📦 Build Information:</b>
-          • Kernel: <code>Linux ${KERNEL_VERSION}</code>
+          • Kernel: <code>Linux ${KVER_SHOW}</code>
           • Branch: <code>android13-5.15-lts</code> (GKI), <code>kernel.lnx.5.15.r16-rel</code> (CLO)
           • Device: <code>$(printf '%s' "$DEVICE_NAME" | esc)</code>
 
