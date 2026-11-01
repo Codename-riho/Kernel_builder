@@ -721,7 +721,7 @@ jobs:
           NEED_SUSFS_ORIG=$NEED_SUSFS_PATCH   # kebutuhan asli manager, sebelum input SUSFS menimpanya
 
           # Logika untuk menonaktifkan SUSFS jika diminta pengguna
-            if [ "$ENABLE_SUSFS" = "Disabled" ]; then
+            if [ "$ENABLE_SUSFS" = "false" ]; then
                echo "ℹ️ Opsi SUSFS dinonaktifkan dari input. Mengabaikan kebutuhan patch SUSFS."
                NEED_SUSFS_PATCH=0
             fi
@@ -741,7 +741,7 @@ jobs:
           # setup.sh memakai `git checkout "$1" || echo default`: ref yang salah TIDAK error,
           # hanya diam-diam memakai branch default. Cek dulu supaya tidak salah build.
           if [ -n "$REF" ] && ! git ls-remote --exit-code "$REPO_URL" "refs/heads/$REF" "refs/tags/$REF" >/dev/null 2>&1; then
-            if [ -n "${KSU_REF:-}" ] || { [ "$NEED_SUSFS_ORIG" != 1 ] && [ "$ENABLE_SUSFS" != "Disabled" ]; }; then
+            if [ -n "${KSU_REF:-}" ] || { [ "$NEED_SUSFS_ORIG" != 1 ] && [ "$ENABLE_SUSFS" != "false" ]; }; then
               echo "Branch yang tersedia di $REPO:"
               git ls-remote --heads "$REPO_URL" | sed 's#.*refs/heads/#  - #' | head -20
               die "Fatal Error: ref '$REF' tidak ada di $REPO"
@@ -780,7 +780,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: "🩹 Patch manager with SUSFS"
-        if: ${{ matrix.kernel.enable_ksu == true && env.SUSFS_SUPPORT == 'Enabled' }}
+        if: ${{ matrix.kernel.enable_ksu == true && env.SUSFS_SUPPORT == 'true' }}
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
           KSU_MANAGER: ${{ inputs.ksu_manager || 'BakaSU' }}
@@ -898,7 +898,7 @@ jobs:
           
           # Detail KSU untuk ringkasan akhir (job "Package Kernels")
           # Format: varian|manager|ref|versi|kpm|susfs|patch-ekstra
-          if [ "${SUSFS_SUPPORT:-Disabled}" != "Enabled" ]; then SUSFS_TXT="nonaktif"
+          if [ "${SUSFS_SUPPORT:-false}" != "true" ]; then SUSFS_TXT="nonaktif"
           elif [ "${NEED_SUSFS_PATCH:-0}" = "1" ]; then SUSFS_TXT="patch manual"
           else SUSFS_TXT="bawaan"; fi
           EXTRA_TXT="tidak ada"
@@ -1780,9 +1780,9 @@ jobs:
           TELEGRAM_IMAGE_URL: ${{ secrets.TELEGRAM_IMAGE_URL }}
           KSU_MANAGER: ${{ inputs.ksu_manager || 'BakaSU' }}
           KSU_REF: ${{ inputs.ksu_ref }}
-          SUSFS_SUPPORT: ${{ inputs.susfsSupport || 'Enabled' }}
+          SUSFS_SUPPORT: ${{ format('{0}', inputs.susfsSupport) == 'false' && 'false' || 'true' }}
           SUSFS_COMMIT: ${{ inputs.susfs_commit }}
-          DROIDSPACES_SUPPORT: ${{ inputs.droidspaces_support || 'Disabled' }}
+          DROIDSPACES_SUPPORT: ${{ inputs.droidspaces_support && 'true' || 'false' }}
           TOOLCHAIN_TYPE: ${{ inputs.toolchain_type || 'android-tools' }}
           CUSTOM_CLANG_REPO: ${{ inputs.customClangRepo }}
           DEVICE_NAME: "Redmi Note 12 4G"
@@ -1818,12 +1818,15 @@ jobs:
           }
 
           # ── Teks konfigurasi (dipakai pesan sukses & gagal) ──
-          if [ "$SUSFS_SUPPORT" = "Disabled" ]; then
+          if [ "$SUSFS_SUPPORT" = "false" ]; then
             SUSFS_TEXT="Disabled"
           else
             SC="${SUSFS_COMMIT:-latest}"; SUSFS_TEXT="Enabled (GKI A13-5.15, ${SC:0:7})"
           fi
-          if [ "$DROIDSPACES_SUPPORT" = "Disabled" ]; then DROIDSPACES_TEXT="Disabled"; else DROIDSPACES_TEXT="Enabled"; fi
+          if [ "$DROIDSPACES_SUPPORT" = "false" ]; then 
+            DROIDSPACES_TEXT="Disabled"; 
+            else 
+            DROIDSPACES_TEXT="Enabled Proper Working"; fi
 
           MANAGER=$(printf '%s' "$KSU_MANAGER${KSU_REF:+ @ $KSU_REF}" | esc)
 
