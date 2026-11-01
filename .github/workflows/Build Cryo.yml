@@ -158,35 +158,41 @@ jobs:
       DEEPSLEEP_TUNING: "${{ inputs.deepsleep_tuning && 'true' || 'false' }}"   # bawaan: mati
 
     steps:
-      - name: "✨ Setup workspace"
-        run: |
-          mkdir -p ${{ env.KERNEL_LOC_DIR }}
-          echo "BUILD_TIME=$(TZ=Asia/Jakarta date +'%Y-%m-%d')" >> $GITHUB_ENV
-          sudo apt-get update -qq
-          sudo apt-get install -y repo rsync aria2 bc bison libxml2-16 libxml2-dev libxml2-utils build-essential ca-certificates clang cpio curl dwarves flex gcc-aarch64-linux-gnu git libdw-dev libelf-dev libssl-dev lld llvm llvm-dev pkg-config python3 rsync unzip xz-utils zip  
-
       - name: 🔍 Check Space (Before Cleanup)
         run: |
           echo "Disk space before cleanup:"
           df -h /
           
-      - name: 🧹 Aggressive Cleanup
+      - name: "🛠️ Setup workspace (cleanup + dependensi)"
         run: |
-          # Remove heavy pre-installed tools
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf "/usr/local/share/boost"
-          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-          
-          # Prune Docker to remove hidden images and build cache
-          sudo docker image prune --all --force
-          sudo docker builder prune -a -f
+          set -euo pipefail
 
-      - name: 🔍 Check Space (After Cleanup)
-        run: |
-          echo "Disk space after cleanup:"
-          df -h /
+          # 1) Bersihkan tool bawaan runner yang besar (jalan di background)
+          #    sambil apt-get update berjalan paralel supaya lebih cepat.
+          (
+            sudo rm -rf /usr/share/dotnet \
+                        /usr/local/lib/android \
+                        /opt/ghc \
+                        /usr/local/share/boost \
+                        "${AGENT_TOOLSDIRECTORY:-/nonexistent}"
+            sudo docker image prune --all --force || true
+            sudo docker builder prune -a -f || true
+          ) &
+          CLEAN_PID=$!
+
+          mkdir -p "${{ env.KERNEL_LOC_DIR }}"
+          echo "BUILD_TIME=$(TZ=Asia/Jakarta date +'%Y-%m-%d')" >> "$GITHUB_ENV"
+          sudo apt-get update -qq
+
+          # Tunggu pembersihan selesai sebelum install (butuh ruang disk)
+          wait "$CLEAN_PID"
+          echo "Sisa disk yang tersedia"
+          df -h / | tail -n 1
+
+          # 2) Dependensi build
+          sudo apt-get install -y repo rsync aria2 bc bison libxml2-16 libxml2-dev libxml2-utils \
+            build-essential ca-certificates clang cpio curl dwarves flex gcc-aarch64-linux-gnu git \
+            libdw-dev libelf-dev libssl-dev lld llvm llvm-dev pkg-config python3 unzip xz-utils zip
           
       - name: 🚧 Setup SWAP 24GB
         uses: pierotofy/set-swap-space@master
