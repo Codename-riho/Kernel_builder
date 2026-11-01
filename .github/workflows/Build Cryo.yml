@@ -724,11 +724,35 @@ jobs:
             *) die "Fatal Error: Varian manager tidak dikenal: $KSU_MANAGER" ;;
           esac
 
+          NEED_SUSFS_ORIG=$NEED_SUSFS_PATCH   # kebutuhan asli manager, sebelum input SUSFS menimpanya
+
           # Logika untuk menonaktifkan SUSFS jika diminta pengguna
             if [ "$ENABLE_SUSFS" = "Disabled" ]; then
                echo "ℹ️ Opsi SUSFS dinonaktifkan dari input. Mengabaikan kebutuhan patch SUSFS."
                NEED_SUSFS_PATCH=0
             fi
+
+                      REPO_URL="https://github.com/${REPO}.git"
+
+          # Branch tempat setup.sh berada harus ada; jika tidak, pakai branch default repo
+          if ! git ls-remote --exit-code --heads "$REPO_URL" "$SETUP_BRANCH" >/dev/null 2>&1; then
+            DEF_BR=$(git ls-remote --symref "$REPO_URL" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$2); print $2; exit}')
+            [ -n "$DEF_BR" ] || die "Fatal Error: repo $REPO tidak bisa diakses"
+            echo "::warning::Branch setup '$SETUP_BRANCH' tidak ada di $REPO, memakai '$DEF_BR'"
+            SETUP_BRANCH="$DEF_BR"
+          fi
+
+          # setup.sh memakai `git checkout "$1" || echo default`: ref yang salah TIDAK error,
+          # hanya diam-diam memakai branch default. Cek dulu supaya tidak salah build.
+          if [ -n "$REF" ] && ! git ls-remote --exit-code "$REPO_URL" "refs/heads/$REF" "refs/tags/$REF" >/dev/null 2>&1; then
+            if [ -n "${KSU_REF:-}" ] || { [ "$NEED_SUSFS_ORIG" != 1 ] && [ "$ENABLE_SUSFS" != "Disabled" ]; }; then
+              echo "Branch yang tersedia di $REPO:"
+              git ls-remote --heads "$REPO_URL" | sed 's#.*refs/heads/#  - #' | head -20
+              die "Fatal Error: ref '$REF' tidak ada di $REPO"
+            fi
+            echo "::warning::Ref bawaan '$REF' tidak ada di $REPO, memakai branch default repo"
+            REF=""
+          fi
 
           REF="${KSU_REF:-$DEFAULT_REF}"
           SETUP_URL="https://raw.githubusercontent.com/${REPO}/${SETUP_BRANCH}/kernel/setup.sh"
@@ -1106,7 +1130,7 @@ jobs:
           [ "$MISSING" -eq 0 ] || echo "::warning::Ada hook SUSFS di kernel yang tidak punya pasangan di KSU, link akan gagal"
                   
       - name: "📝 Append custom Makefile line"
-        if: github.event.inputs.toolchain_type == 'android-tools'
+        if: ${{ env.TOOLCHAIN_TYPE == 'android-tools' }}
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         run: |
          echo 'KBUILD_CFLAGS += -Wno-implicit-function-declaration' >> Makefile
@@ -1400,7 +1424,7 @@ jobs:
           echo "✅ Guard VINTF lolos: IPv6 NAT/Masquerade nonaktif"
           
       - name: "🔨 Build kernel"
-        if: github.event.inputs.toolchain_type == 'android-tools'
+        if: ${{ env.TOOLCHAIN_TYPE == 'android-tools' }}
         working-directory: ${{ env.WORK_DIR }}    
         run: |
           set -o pipefail
@@ -1410,7 +1434,7 @@ jobs:
           build/build.sh -j$(nproc --all) 2>&1 | tee build_full.log
 
       - name: "🔎 Cek .config akhir (android-tools)"
-        if: github.event.inputs.toolchain_type == 'android-tools'
+        if: ${{ env.TOOLCHAIN_TYPE == 'android-tools' }}
         working-directory: ${{ env.WORK_DIR }}
         env:
           KSU_MANAGER: ${{ inputs.ksu_manager || 'BakaSU' }}
@@ -1443,7 +1467,7 @@ jobs:
           done
 
       - name: "👍 Make defconfig"
-        if: github.event.inputs.toolchain_type == 'custom-tools'
+        if: ${{ env.TOOLCHAIN_TYPE == 'custom-tools' }}
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
           KSU_MANAGER: ${{ inputs.ksu_manager || 'BakaSU' }}
@@ -1492,7 +1516,7 @@ jobs:
           esac
                  
       - name: "🎶 Build kernel"
-        if: github.event.inputs.toolchain_type == 'custom-tools'
+        if: ${{ env.TOOLCHAIN_TYPE == 'custom-tools' }}
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
           KBUILD_BUILD_USER: dyatz
@@ -1527,7 +1551,7 @@ jobs:
         run: |
            set -euo pipefail
            mkdir -p out/dist
-           if [ "${{ github.event.inputs.toolchain_type }}" = "custom-tools" ]; then
+           if [ "$TOOLCHAIN_TYPE" = "custom-tools" ]; then
              # If CLANG_PATH was set earlier in this job it will be available
              if [ -n "${CLANG_PATH:-}" ]; then
                echo "custom-tools ($(basename "$CLANG_PATH"))" > out/dist/build_tools.txt
@@ -1539,7 +1563,7 @@ jobs:
              echo "android-tools (clang-r614150)" > out/dist/build_tools.txt
            fi
 
-           if [ "${{ github.event.inputs.toolchain_type }}" = "custom-tools" ]; then
+           if [ "$TOOLCHAIN_TYPE" = "custom-tools" ]; then
              src="${KERNEL_LOC_DIR}/${KERNEL_NAME}/out/arch/arm64/boot/Image"
            else
              src="out/dist/Image"        # hasil build/build.sh
@@ -1718,7 +1742,7 @@ jobs:
           KSU_REF: ${{ inputs.ksu_ref }}
           SUSFS_SUPPORT: ${{ inputs.susfsSupport || 'Enabled' }}
           SUSFS_COMMIT: ${{ inputs.susfs_commit }}
-          DROIDSPACES_SUPPORT: ${{ inputs.droidspaces_support || 'Enabled' }}
+          DROIDSPACES_SUPPORT: ${{ inputs.droidspaces_support || 'Disabled' }}
           TOOLCHAIN_TYPE: ${{ inputs.toolchain_type || 'android-tools' }}
           CUSTOM_CLANG_REPO: ${{ inputs.customClangRepo }}
           DEVICE_NAME: "Redmi Note 12 4G"
