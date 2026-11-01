@@ -56,19 +56,13 @@ on:
       droidspaces_support: 
        description: "Add droidspaces proper support?"
        required: true
-       type: choice
-       default: "Disabled"
-       options:
-         - "Enabled"
-         - "Disabled"    
+       type: boolean
+       default: false   
       susfsSupport:
         description: "Add SUSFS Implementation?"
         required: true
-        type: choice
-        default: "Enabled"
-        options:
-          - "Enabled"
-          - "Disabled"
+        type: boolean
+        default: true
       susfs_commit:
         description: "Commit hash SUSFS4KSU (kosongkan untuk mengambil versi terbaru)"
         required: false
@@ -156,8 +150,8 @@ jobs:
       
       # default aman untuk schedule + manual run
       TOOLCHAIN_TYPE: "${{ inputs.toolchain_type || 'android-tools' }}"
-      DROIDSPACES_SUPPORT: "${{ inputs.droidspaces_support || 'Disabled' }}"
-      SUSFS_SUPPORT: "${{ inputs.susfsSupport || 'Enabled' }}" 
+      DROIDSPACES_SUPPORT: "${{ inputs.droidspaces_support || 'false' }}"
+      SUSFS_SUPPORT: "${{ inputs.susfsSupport || 'true' }}" 
       KSU_MANAGER: "${{ inputs.ksu_manager || 'BakaSU' }}"
       KSU_REF: "${{ inputs.ksu_ref || '' }}"
       SUSFS_COMMIT: "${{ inputs.susfs_commit || '' }}"
@@ -604,7 +598,7 @@ jobs:
           echo "Localversion: $VER"
                     
       - name: "🏜️📦 Add Droidspaces Support (kABI patch + GKI defconfig)"
-        if: ${{ env.DROIDSPACES_SUPPORT == 'Enabled' }}
+        if: ${{ env.DROIDSPACES_SUPPORT == 'true' }}
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
           NO_IP6_NAT: "1"
@@ -913,7 +907,7 @@ jobs:
             > "$WORK_DIR/ksu_info.txt"
           
       - name: "ඞ Inject SUSFS Integration"
-        if: ${{ matrix.kernel.enable_ksu == true && env.SUSFS_SUPPORT == 'Enabled' }}
+        if: ${{ matrix.kernel.enable_ksu == true && env.SUSFS_SUPPORT == 'true' }}
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
           SUSFS_COMMIT: ${{ env.SUSFS_COMMIT }}
@@ -1112,7 +1106,7 @@ jobs:
           echo "🎉 SUSFS Integration setup complete!"
           
       - name: "🔗 Cek simbol hook SUSFS dan KSU"
-        if: matrix.kernel.enable_ksu == true && env.SUSFS_SUPPORT == 'Enabled'
+        if: matrix.kernel.enable_ksu == true && env.SUSFS_SUPPORT == 'true'
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         run: |
           set +e
