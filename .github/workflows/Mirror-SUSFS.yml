@@ -7,7 +7,7 @@ on:
 
 jobs:
   mirror-susfs:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: write # Wajib agar Actions bisa melakukan push ke repo Anda
     
