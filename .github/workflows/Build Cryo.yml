@@ -150,12 +150,12 @@ jobs:
       
       # default aman untuk schedule + manual run
       TOOLCHAIN_TYPE: "${{ inputs.toolchain_type || 'android-tools' }}"
-      DROIDSPACES_SUPPORT: "${{ inputs.droidspaces_support || 'false' }}"
-      SUSFS_SUPPORT: "${{ inputs.susfsSupport || 'true' }}" 
+      DROIDSPACES_SUPPORT: "${{ inputs.droidspaces_support && 'true' || 'false' }}"   # bawaan: mati
+      SUSFS_SUPPORT: "${{ format('{0}', inputs.susfsSupport) == 'false' && 'false' || 'true' }}"   # bawaan: aktif
       KSU_MANAGER: "${{ inputs.ksu_manager || 'BakaSU' }}"
       KSU_REF: "${{ inputs.ksu_ref || '' }}"
       SUSFS_COMMIT: "${{ inputs.susfs_commit || '' }}"
-      DEEPSLEEP_TUNING: "${{ inputs.deepsleep_tuning || 'false' }}"
+      DEEPSLEEP_TUNING: "${{ inputs.deepsleep_tuning && 'true' || 'false' }}"   # bawaan: mati
 
     steps:
       - name: "✨ Setup workspace"
