@@ -1120,6 +1120,14 @@ jobs:
           mkdir -p fs
           cp -f susfs4ksu/kernel_patches/fs/susfs.c fs/susfs.c
           echo "✔ Copied fs/susfs.c"
+
+          # tandai 2 fungsi helper agar tidak dianggap "unused"
+          sed -i -E \
+            -e 's/^static struct cred \*susfs_switch_to_ksu_domain\(void\)/static __maybe_unused struct cred *susfs_switch_to_ksu_domain(void)/' \
+            -e 's/^static void susfs_restore_creds\(/static __maybe_unused void susfs_restore_creds(/' \
+            fs/susfs.c
+          grep -nE '__maybe_unused.*(susfs_switch_to_ksu_domain|susfs_restore_creds)' fs/susfs.c \
+            || { echo "::error::sed __maybe_unused gagal"; exit 1; }
           
           # Always replace include/linux/susfs.h
           mkdir -p include/linux
