@@ -1275,36 +1275,71 @@ jobs:
           # Bukti hasil akhir
           grep -nE "LINUX_COMPILE_(BY|HOST)" "$F"
 
-      - name: "⚖️ Set CPU Governor to Default (walt)"
+      - name: "⚖️ Set CPU Governor to Enhance Shedutil"
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
-        env:
-          # Pastikan variabel DEFCONFIG_NAME sudah tersedia di environment
-          DEFCONFIG_NAME: ${{ env.DEFCONFIG_NAME }} 
         run: |
           set -euo pipefail
           die() { echo "::error::$*"; exit 1; }
 
-          # Menentukan lokasi file konfigurasi kernel
-          CONFIG_PATH="arch/arm64/configs/$DEFCONFIG_NAME"
-          
-          if [ ! -f "$CONFIG_PATH" ]; then
-             die "Fatal Error: File Defconfig tidak ditemukan di $CONFIG_PATH."
+          CONFIG_PATH="arch/arm64/configs/${DEFCONFIG_NAME}"
+          [ -f "$CONFIG_PATH" ] || die "Defconfig tidak ditemukan: $CONFIG_PATH"
+
+          # Cek apakah simbol ada di Kconfig tree ini (hindari baris sampah "is not set")
+          has_sym() {
+            grep -rqsE "^config ${1#CONFIG_}\$" --include='Kconfig*' drivers/cpufreq init kernel/sched
+          }
+
+          echo "⚙️ Mengatur CPU Governor default ke 'schedutil'..."
+
+          # 1. Build schedutil + uclamp (dipakai Android untuk boost app aktif)
+          scripts/config --file "$CONFIG_PATH" \
+            -e CONFIG_CPU_FREQ_GOV_SCHEDUTIL \
+            -e CONFIG_UCLAMP_TASK \
+            -e CONFIG_UCLAMP_TASK_GROUP
+
+          # 2. Matikan default governor lain (hanya yang memang ada di tree ini)
+          for g in PERFORMANCE POWERSAVE USERSPACE ONDEMAND CONSERVATIVE INTERACTIVE WALT; do
+            if has_sym "CONFIG_CPU_FREQ_DEFAULT_GOV_${g}"; then
+              scripts/config --file "$CONFIG_PATH" -d "CONFIG_CPU_FREQ_DEFAULT_GOV_${g}"
+            fi
+          done
+
+          # 3. Jadikan schedutil governor default
+          scripts/config --file "$CONFIG_PATH" -e CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL
+
+          # 4. Optimasi schedutil (inject langsung ke sumber)
+          SG_C="kernel/sched/cpufreq_schedutil.c"
+          RL_US=500   # µs, default bawaan driver biasanya jauh lebih besar
+          [ -f "$SG_C" ] || die "$SG_C tidak ditemukan"
+
+          # 4a. rate_limit_us default: respons naik-turun frekuensi lebih cepat
+          RL_OLD='tunables->rate_limit_us = cpufreq_policy_transition_delay_us(policy);'
+          if [ "$(grep -cF "$RL_OLD" "$SG_C")" -eq 1 ]; then
+            sed -i "s|${RL_OLD}|tunables->rate_limit_us = ${RL_US};|" "$SG_C"
+            grep -qF "tunables->rate_limit_us = ${RL_US};" "$SG_C" || die "Gagal inject rate_limit_us"
+            echo "✔️ schedutil rate_limit_us default: ${RL_US}µs"
+          else
+            echo "::warning::Pola rate_limit_us tidak cocok di $SG_C, dilewati"
           fi
 
-          echo "⚙️ Mengubah CPU Governor default menjadi 'walt' (Balanced)..."
+          # 4b. OPSIONAL: headroom util 1.25x -> 1.375x (naik frekuensi sedikit lebih awal)
+          #     Berlaku untuk GKI dan CLO: keduanya memakai map_util_perf() di get_next_freq()
+          HR_OLD='util = map_util_perf(util);'
+          HR_NEW='util = util + (util >> 2) + (util >> 3);'
+          if [ "$(grep -cF "$HR_OLD" "$SG_C")" -eq 1 ]; then
+            sed -i "s|${HR_OLD}|${HR_NEW}|" "$SG_C"
+            grep -qF "$HR_NEW" "$SG_C" || die "Gagal inject headroom"
+            echo "✔️ schedutil headroom: 1.375x (titik naik frekuensi di util ~73%)"
+          else
+            echo "::warning::Pola map_util_perf tidak cocok di $SG_C, headroom dilewati"
+          fi
 
-          # 1. Pastikan governor schedutil ikut di-build ke dalam kernel
-          scripts/config --file "$CONFIG_PATH" -e CONFIG_CPU_FREQ_GOV_SCHEDUTIL
+          # 5. Verifikasi
+          for o in CPU_FREQ_GOV_SCHEDUTIL CPU_FREQ_DEFAULT_GOV_SCHEDUTIL UCLAMP_TASK UCLAMP_TASK_GROUP; do
+            grep -q "^CONFIG_${o}=y" "$CONFIG_PATH" || die "CONFIG_${o} gagal diaktifkan di $CONFIG_PATH"
+          done
 
-          # 2. Matikan governor lain agar tidak menjadi default
-          scripts/config --file "$CONFIG_PATH" -d CONFIG_CPU_FREQ_DEFAULT_GOV_PERFORMANCE
-          scripts/config --file "$CONFIG_PATH" -d CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND
-          scripts/config --file "$CONFIG_PATH" -d CONFIG_CPU_FREQ_DEFAULT_GOV_INTERACTIVE
-
-          # 3. Jadikan schedutil sebagai governor default utama
-          scripts/config --file "$CONFIG_PATH" -e CONFIG_CPU_FREQ_DEFAULT_GOV_WALT
-
-          echo "✅ CPU Governor berhasil disetel ke 'walt' pada file $DEFCONFIG_NAME!"
+          echo "✔️ CPU Governor default: enchanted schedutil (uclamp aktif)"
 
       - name: "💤 Install CEDS (built-in kernel)"
         if: ${{ env.DEEPSLEEP_TUNING == 'true' }}
