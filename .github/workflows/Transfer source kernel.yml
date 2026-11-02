@@ -50,11 +50,6 @@ jobs:
         run: |
           set -e
           
-          if [ -z "$TARGET_PAT" ]; then
-            echo "::error::Secret TARGET_PAT tidak ditemukan! Silakan buat secret repositori terlebih dahulu."
-            exit 1
-          fi
-          
           # Hapus remote asli agar tidak bentrok
           git remote remove origin
           
@@ -62,12 +57,12 @@ jobs:
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           
-          # Tambahkan remote repositori target Anda menggunakan Token
-          git remote add target "https://${{ github.actor }}:${TARGET_PAT}@github.com/${{ inputs.target_repo }}.git"
+          # Menggunakan github.token bawaan (tanpa perlu secret)
+          git remote add target "https://${{ github.actor }}:${{ github.token }}@github.com/${{ inputs.target_repo }}.git"
           
           echo "Mengunggah (push) ke https://github.com/${{ inputs.target_repo }} pada branch ${{ inputs.target_branch }}..."
           
-          # Menggunakan HEAD untuk mendorong state saat ini ke nama branch target yang diinginkan
+          # Push ke repo ini
           git push -u target HEAD:${{ inputs.target_branch }}
           
           echo "✅ Transfer selesai!"
