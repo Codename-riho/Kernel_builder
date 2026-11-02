@@ -36,10 +36,11 @@ jobs:
         run: |
           echo "Mengambil branch ${{ inputs.source_branch }} dari ${{ inputs.source_repo }}..."
           
-          # Optimasi buffer untuk clone repo kernel yang ukurannya raksasa
-          git config --global http.postBuffer 524288000
-          git config --global http.maxRequestBuffer 100M
-          git config --global core.compression 0
+          # Optimasi koneksi Git khusus untuk mencegah timeout
+          git config --global http.version HTTP/1.1          
+          git config --global http.postBuffer 2147483648   
+          git config --global http.lowSpeedLimit 1000
+          git config --global http.lowSpeedTime 600
           
           # Clone hanya 1 branch yang dibutuhkan agar cepat
           git clone --branch ${{ inputs.source_branch }} --single-branch ${{ inputs.source_repo }} kernel-source
@@ -50,6 +51,10 @@ jobs:
           TARGET_PAT: ${{ secrets.TARGET_PAT }}
         run: |
           set -e
+          
+          # Optimasi memori agar pack-objects tidak kehabisan napas saat kompresi upload
+          git config --global pack.windowMemory 256m
+          git config --global pack.packSizeLimit 2g
           
           # Hapus remote asli agar tidak bentrok
           git remote remove origin
