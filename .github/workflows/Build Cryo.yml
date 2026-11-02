@@ -1124,7 +1124,7 @@ jobs:
           # Always replace fs/susfs.c
           mkdir -p fs
           cp -f susfs4ksu/kernel_patches/fs/susfs.c fs/susfs.c
-          echo "✔ Copied fs/susfs.c"
+          echo "✅ Copied fs/susfs.c"
 
           # tandai 2 fungsi helper agar tidak dianggap "unused"
           sed -i -E \
@@ -1133,7 +1133,7 @@ jobs:
             fs/susfs.c
 
           if [ "$(grep -cE '__maybe_unused.*(susfs_switch_to_ksu_domain|susfs_restore_creds)' fs/susfs.c)" -eq 2 ]; then
-            echo "✔️ Unused functions marked as used"
+            echo "✅ Unused functions marked as used"
           else
             echo "::error::Gagal menandai fungsi unused di fs/susfs.c"
             exit 1
@@ -1142,12 +1142,12 @@ jobs:
           # Always replace include/linux/susfs.h
           mkdir -p include/linux
           cp -f susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/susfs.h
-          echo "✔ Copied include/linux/susfs.h"
+          echo "✅ Copied include/linux/susfs.h"
           
           # Also install missing susfs_def.h
           if [ -f susfs4ksu/kernel_patches/include/linux/susfs_def.h ]; then
             cp -f susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/susfs_def.h
-            echo "✔ Copied include/linux/susfs_def.h"
+            echo "✅ Copied include/linux/susfs_def.h"
           else
             echo "⚠️ susfs_def.h not found in repo"
           fi
@@ -1163,7 +1163,7 @@ jobs:
           # Create symbolic link for drivers/kernelsu (if needed by build system)
           if [ ! -L "drivers/kernelsu" ]; then
             ln -sf ../KernelSU drivers/kernelsu
-            echo "✔ Created drivers/kernelsu symlink"
+            echo "✅ Created drivers/kernelsu symlink"
           fi
 
           echo "✅ SUSFS build wiring verified"
@@ -1208,7 +1208,7 @@ jobs:
           
           echo "✅ KSU configs added"
           
-          echo "🎉 SUSFS Integration setup complete!"
+          echo "🎉 SUSFS Integration setup complete! (hmm SUS ඞ )"
           
       - name: "🔗 Cek simbol hook SUSFS dan KSU"
         if: matrix.kernel.enable_ksu == true && env.SUSFS_SUPPORT == 'true'
