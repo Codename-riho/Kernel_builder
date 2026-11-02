@@ -53,33 +53,33 @@ jobs:
           git config --global http.lowSpeedTime 600
           
           # Clone hanya 1 branch yang dibutuhkan agar cepat
-          git clone --branch ${{ inputs.source_branch }} --single-branch ${{ inputs.source_repo }} kernel-source
+          git clone --depth=1 --no-tags --branch ${{ inputs.source_branch }} --single-branch ${{ inputs.source_repo }} kernel-source
 
-      - name: "🚀 Push ke Repository Target"
+      - name: "🚀 Push ke Repository Target (Fresh History)"
         working-directory: ./kernel-source
-        env:
-          TARGET_PAT: ${{ secrets.TARGET_PAT }}
         run: |
           set -e
           
-          # Optimasi memori agar pack-objects tidak kehabisan napas saat kompresi upload
-          git config --global pack.windowMemory 256m
-          git config --global pack.packSizeLimit 2g
+          echo "Menghapus riwayat Git raksasa bawaan sumber..."
+          rm -rf .git
           
-          # Hapus remote asli agar tidak bentrok
-          git remote remove origin
-          
-          # Konfigurasi identitas git (sebagai bot)
+          echo "Membuat riwayat Git baru yang 100% bersih..."
+          git init
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           
-          # Menggunakan github.token bawaan (tanpa perlu secret)
+          # Masukkan semua file kernel ke dalam commit pertama yang segar
+          git checkout -b ${{ inputs.target_branch }}
+          git add .
+          git commit -m "Sync: Source kernel segar dari ${{ inputs.source_repo }}"
+          
+          # Tambahkan remote repositori target Anda
           git remote add target "https://${{ github.actor }}:${{ github.token }}@github.com/${{ inputs.target_repo }}.git"
           
           echo "Mengunggah (push) ke https://github.com/${{ inputs.target_repo }} pada branch ${{ inputs.target_branch }}..."
           
-          # Push ke repo ini
-          git push -u target HEAD:${{ inputs.target_branch }}
+          # Push paksa (-f) ke repositori Anda
+          git push -f -u target ${{ inputs.target_branch }}
           
-          echo "✅ Transfer selesai!"
+          echo "✅ Transfer selesai mutlak!"
           
