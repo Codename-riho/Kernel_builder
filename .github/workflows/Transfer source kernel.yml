@@ -20,7 +20,8 @@ on:
         required: true
         type: string
         default: "main"
-
+permissions:
+   contents: write
 jobs:
   transfer:
     name: "🔄 Transfer Repository"
