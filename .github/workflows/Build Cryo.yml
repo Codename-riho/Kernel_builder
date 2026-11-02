@@ -285,7 +285,12 @@ jobs:
             exec 1>&3 2>&4
             [ -z "${DL_DIR:-}" ] || rm -rf "$DL_DIR"
             if [ "$rc" -eq 0 ]; then
-              echo "✅ Setup toolchain berhasil"
+              echo "✅ Setup Toolchain Berhasil"
+              if [ "$TOOLCHAIN_TYPE" = "android-tools" ]; then
+                echo "📦 Memakai toolchain type : android-tools (clang-r614150)"
+              else
+                echo "📦 Memakai toolchain type : custom-tools (${CLANG_REPO}${CLANG_TAG:+@$CLANG_TAG})"
+              fi
             else
               echo "❌ Setup toolchain gagal (exit $rc). Log lengkap:"
               cat "$LOG"
