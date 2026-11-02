@@ -1126,8 +1126,13 @@ jobs:
             -e 's/^static struct cred \*susfs_switch_to_ksu_domain\(void\)/static __maybe_unused struct cred *susfs_switch_to_ksu_domain(void)/' \
             -e 's/^static void susfs_restore_creds\(/static __maybe_unused void susfs_restore_creds(/' \
             fs/susfs.c
-          grep -nE '__maybe_unused.*(susfs_switch_to_ksu_domain|susfs_restore_creds)' fs/susfs.c \
-            || { echo "::error::sed __maybe_unused gagal"; exit 1; }
+
+          if [ "$(grep -cE '__maybe_unused.*(susfs_switch_to_ksu_domain|susfs_restore_creds)' fs/susfs.c)" -eq 2 ]; then
+            echo "✔️ Unused functions marked as used"
+          else
+            echo "::error::Gagal menandai fungsi unused di fs/susfs.c"
+            exit 1
+          fi
           
           # Always replace include/linux/susfs.h
           mkdir -p include/linux
