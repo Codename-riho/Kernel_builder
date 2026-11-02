@@ -32,6 +32,16 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
           sudo docker image prune --all --force
 
+      - name: 🚧 Setup SWAP 16GB
+        uses: pierotofy/set-swap-space@master
+        with:
+            swap-size-gb: 16
+            
+      - name: 🔥 Tune Swap
+        run: |
+            echo "vm.swappiness=85" | sudo tee -a /etc/sysctl.conf
+            sudo sysctl -p
+
       - name: "📥 Clone Repository Sumber"
         run: |
           echo "Mengambil branch ${{ inputs.source_branch }} dari ${{ inputs.source_repo }}..."
