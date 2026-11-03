@@ -809,14 +809,13 @@ jobs:
           REPO_URL="https://github.com/${REPO}.git"
 
           # Branch tempat setup.sh berada harus ada; jika tidak, pakai branch default repo
+          REF="${KSU_REF:-$DEFAULT_REF}"
           if ! git ls-remote --exit-code --heads "$REPO_URL" "$SETUP_BRANCH" >/dev/null 2>&1; then
             DEF_BR=$(git ls-remote --symref "$REPO_URL" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$2); print $2; exit}')
             [ -n "$DEF_BR" ] || die "Fatal Error: repo $REPO tidak bisa diakses"
             echo "::warning::Branch setup '$SETUP_BRANCH' tidak ada di $REPO, memakai '$DEF_BR'"
             SETUP_BRANCH="$DEF_BR"
           fi
-
-          REF="${KSU_REF:-$DEFAULT_REF}"
 
           # setup.sh memakai `git checkout "$1" || echo default`: ref yang salah TIDAK error,
           # hanya diam-diam memakai branch default. Cek dulu supaya tidak salah build.
@@ -1198,6 +1197,51 @@ jobs:
           echo "✅ KSU configs added"
           
           echo "🎉 SUSFS Integration setup complete! (hmm SUS ඞ )"
+
+      - name: "💉 Safe-mode inject PRIORITY_UID_FILTER"
+        shell: bash
+        env:
+          DEFCONFIG_NAME: ${{ env.DEFCONFIG_NAME }}
+        run: |
+          set -euo pipefail
+          SYM="KSU_SUSFS_PRIORITY_UID_FILTER"
+          KCONF="$(readlink -f drivers/kernelsu/Kconfig 2>/dev/null || true)"
+          DEFCONFIG="arch/arm64/configs/${DEFCONFIG_NAME}"
+
+          if [ ! -f "$KCONF" ] || ! grep -q '^config KSU_SUSFS$' "$KCONF"; then
+            echo "::warning::SUSFS tidak ada di Kconfig KSU, injeksi ${SYM} dilewati"; exit 0
+          fi
+
+          if grep -q "^config ${SYM}\$" "$KCONF"; then
+            echo "ℹ️ ${SYM} sudah dideklarasikan oleh patch"
+          else
+            tmp="$(mktemp)"
+            awk -v sym="$SYM" '
+              /^menu "KernelSU - SUSFS"/ { insus=1 }
+              insus && /^endmenu/ && !done {
+                print "config " sym
+                print "\tbool \"Enable priority uid filter for SUSFS\""
+                print "\tdepends on KSU_SUSFS"
+                print "\tdefault y"
+                print "\thelp"
+                print "\t  Manual injection (workflow safe mode)."
+                print ""
+                done=1; insus=0
+              }
+              { print }
+              END { exit(done ? 0 : 3) }
+            ' "$KCONF" > "$tmp" || { rm -f "$tmp"; echo "::warning::menu SUSFS tidak ditemukan, injeksi dibatalkan"; exit 0; }
+            cat "$tmp" > "$KCONF"; rm -f "$tmp"
+            echo "💉 Deklarasi ${SYM} disuntikkan ke Kconfig KSU"
+          fi
+
+          grep -q "^CONFIG_${SYM}=y" "$DEFCONFIG" || echo "CONFIG_${SYM}=y" >> "$DEFCONFIG"
+
+          if grep -rIq "CONFIG_${SYM}" drivers/kernelsu/ fs/ include/linux/ 2>/dev/null; then
+            echo "✅ Source mereferensikan CONFIG_${SYM}"
+          else
+            echo "ℹ️ Source tidak mereferensikan CONFIG_${SYM}: fitur kemungkinan selalu terkompilasi (tanpa gate)"
+          fi
           
       - name: "🔗 Cek simbol hook SUSFS dan KSU"
         if: matrix.kernel.enable_ksu == true && env.SUSFS_SUPPORT == 'true'
@@ -1385,6 +1429,10 @@ jobs:
               echo "::endgroup::"
               ;;
           esac
+          
+          grep -q '^CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER=y' out/.config \
+          && echo "✅ PRIORITY_UID_FILTER aktif" \
+          || echo "::warning::PRIORITY_UID_FILTER tidak aktif di .config"
                  
       - name: "🎶 Build kernel"
         if: ${{ env.TOOLCHAIN_TYPE == 'custom-tools' }}
