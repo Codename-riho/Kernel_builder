@@ -1365,6 +1365,7 @@ jobs:
         env:
           KSU_MANAGER: ${{ inputs.ksu_manager || 'BakaSU' }}
           ENABLE_KSU: ${{ matrix.kernel.enable_ksu }}
+          SUSFS_SUPPORT: ${{ env.SUSFS_SUPPORT }}
           VARIANT_NAME: ${{ matrix.kernel.name }}
         run: |
           set -euo pipefail
@@ -1377,8 +1378,9 @@ jobs:
           # Pastikan config penting tidak hilang setelah resolusi dependensi
           CHECK_LIST="CONFIG_LTO_CLANG_FULL CONFIG_TCP_CONG_BBR3 CONFIG_ZRAM_DEF_COMP_LZ4 CONFIG_CRYPTO_LZO"
           if [ "$ENABLE_KSU" = "true" ]; then
-            CHECK_LIST="$CHECK_LIST CONFIG_KSU CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER"
+            CHECK_LIST="$CHECK_LIST CONFIG_KSU"
             [ "${KSU_MANAGER:-}" = "SukiSU-Ultra+KPM" ] && CHECK_LIST="$CHECK_LIST CONFIG_KPM"
+            [ "${SUSFS_SUPPORT:-}" = "Enabled" ] && CHECK_LIST="$CHECK_LIST CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER"
           fi
 
           # Baca .config sekali saja: daftar semua opsi yang bernilai =y
