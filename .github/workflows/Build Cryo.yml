@@ -746,7 +746,7 @@ jobs:
           sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig
           curl -LSs "https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh" | bash -
       
-      - name: "⚔️ Setup Ksu Variant (${{ env.KSU_MANAGER }})"
+      - name: "⚔️ Setup Ksu Variant (${{ inputs.ksu_manager || 'BakaSU' }})"
         if: matrix.kernel.enable_ksu == true
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
@@ -784,13 +784,14 @@ jobs:
           REPO_URL="https://github.com/${REPO}.git"
 
           # Branch tempat setup.sh berada harus ada; jika tidak, pakai branch default repo
-          REF="${KSU_REF:-$DEFAULT_REF}"
           if ! git ls-remote --exit-code --heads "$REPO_URL" "$SETUP_BRANCH" >/dev/null 2>&1; then
             DEF_BR=$(git ls-remote --symref "$REPO_URL" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$2); print $2; exit}')
             [ -n "$DEF_BR" ] || die "Fatal Error: repo $REPO tidak bisa diakses"
             echo "::warning::Branch setup '$SETUP_BRANCH' tidak ada di $REPO, memakai '$DEF_BR'"
             SETUP_BRANCH="$DEF_BR"
           fi
+
+          REF="${KSU_REF:-$DEFAULT_REF}"
 
           # setup.sh memakai `git checkout "$1" || echo default`: ref yang salah TIDAK error,
           # hanya diam-diam memakai branch default. Cek dulu supaya tidak salah build.
