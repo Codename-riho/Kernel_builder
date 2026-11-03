@@ -1175,6 +1175,7 @@ jobs:
           echo "🎉 SUSFS Integration setup complete! (hmm SUS ඞ )"
 
       - name: "💉 Safe-mode inject PRIORITY_UID_FILTER"
+        if: matrix.kernel.enable_ksu == true
         shell: bash
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
@@ -1376,7 +1377,7 @@ jobs:
           # Pastikan config penting tidak hilang setelah resolusi dependensi
           CHECK_LIST="CONFIG_LTO_CLANG_FULL CONFIG_TCP_CONG_BBR3 CONFIG_ZRAM_DEF_COMP_LZ4 CONFIG_CRYPTO_LZO"
           if [ "$ENABLE_KSU" = "true" ]; then
-            CHECK_LIST="$CHECK_LIST CONFIG_KSU"
+            CHECK_LIST="$CHECK_LIST CONFIG_KSU CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER"
             [ "${KSU_MANAGER:-}" = "SukiSU-Ultra+KPM" ] && CHECK_LIST="$CHECK_LIST CONFIG_KPM"
           fi
 
@@ -1407,10 +1408,6 @@ jobs:
               ;;
           esac
           
-          grep -q '^CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER=y' out/.config \
-          && echo "✅ PRIORITY_UID_FILTER aktif" \
-          || echo "::warning::PRIORITY_UID_FILTER tidak aktif di .config"
-                 
       - name: "🎶 Build kernel"
         if: ${{ env.TOOLCHAIN_TYPE == 'custom-tools' }}
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
