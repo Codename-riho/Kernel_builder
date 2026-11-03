@@ -1175,7 +1175,7 @@ jobs:
 
       - name: "💉 Safe-mode inject PRIORITY_UID_FILTER"
         shell: bash
-                working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
+        working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
           DEFCONFIG_NAME: ${{ env.DEFCONFIG_NAME }}
         run: |
