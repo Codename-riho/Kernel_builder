@@ -581,34 +581,9 @@ jobs:
           #Petakan konfigurasi otomatis untuk shuedule
             echo "📦 TOOLCHAIN_TYPE=${TOOLCHAIN_TYPE}"
             echo "🏜️📦 DROIDSPACES_SUPPORT=${DROIDSPACES_SUPPORT}"
-            echo "SUSFS_SUPPORT=${SUSFS_SUPPORT}"
+            echo "ඞ SUSFS_SUPPORT=${SUSFS_SUPPORT}"
             echo "⚔️ KSU_MANAGER=${KSU_MANAGER}"
 
-      - name: 🌡️ Fix pm6125-tz cooling-map CPU0
-        working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
-        run: |
-          set -euo pipefail
-
-          mapfile -t FILES < <(grep -rlE 'trip0_cpu0' arch/arm64/boot/dts 2>/dev/null \
-                                | xargs -r grep -lE 'pm6125_trip0' || true)
-
-          if [ "${#FILES[@]}" -eq 0 ]; then
-            echo "::notice::DTS pm6125-tz tidak ditemukan di tree ini, dilewati"
-            exit 0
-          fi
-
-          for f in "${FILES[@]}"; do
-            before=$(md5sum "$f")
-            # <&CPU0 7 7>  ->  <&CPU0 6 THERMAL_NO_LIMIT>  (sama gayanya dengan trip0_cpu4)
-            perl -0pi -e 's/(trip0_cpu0\s*\{[^}]*?cooling-device\s*=\s*<&CPU0\s+)\S+\s+\S+(\s*>)/${1}6 THERMAL_NO_LIMIT$2/s' "$f"
-            if [ "$before" != "$(md5sum "$f")" ]; then
-              echo "✅ dipatch: $f"
-              grep -n -A3 'trip0_cpu0' "$f" | head -6
-            else
-              echo "⏭️ sudah sesuai / tidak cocok pola: $f"
-            fi
-          done
-  
       - name: "🚄 Porting BBRv3 + PLB (cherry-pick)"
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
