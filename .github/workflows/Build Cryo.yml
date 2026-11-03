@@ -1179,44 +1179,19 @@ jobs:
           DEFCONFIG_NAME: ${{ env.DEFCONFIG_NAME }}
         run: |
           set -euo pipefail
-          SYM="KSU_SUSFS_PRIORITY_UID_FILTER"
-          KCONF="$(readlink -f drivers/kernelsu/Kconfig 2>/dev/null || true)"
-          DEFCONFIG="arch/arm64/configs/${DEFCONFIG_NAME}"
+          SYM=KSU_SUSFS_PRIORITY_UID_FILTER
+          DEF="arch/arm64/configs/${DEFCONFIG_NAME}"
+          KSU_REAL="$(readlink -f drivers/kernelsu 2>/dev/null || true)"
+          KCONF="$(grep -rlE '^config KSU_SUSFS[[:space:]]*$' --include='Kconfig*' ${KSU_REAL:+"$KSU_REAL"} . 2>/dev/null | head -1 || true)"
+          [ -n "$KCONF" ] || { echo "::warning::KSU_SUSFS tidak dideklarasikan di Kconfig, ${SYM} dilewati"; exit 0; }
 
-          if [ ! -f "$KCONF" ] || ! grep -q '^config KSU_SUSFS$' "$KCONF"; then
-            echo "::warning::SUSFS tidak ada di Kconfig KSU, injeksi ${SYM} dilewati"; exit 0
-          fi
-
-          if grep -q "^config ${SYM}\$" "$KCONF"; then
-            echo "ℹ️ ${SYM} sudah dideklarasikan oleh patch"
+          if grep -rqE "^config ${SYM}[[:space:]]*$" --include='Kconfig*' "$(dirname "$KCONF")"; then
+            echo "ℹ️ ${SYM} sudah dideklarasikan"
           else
-            tmp="$(mktemp)"
-            awk -v sym="$SYM" '
-              /^menu "KernelSU - SUSFS"/ { insus=1 }
-              insus && /^endmenu/ && !done {
-                print "config " sym
-                print "\tbool \"Enable priority uid filter for SUSFS\""
-                print "\tdepends on KSU_SUSFS"
-                print "\tdefault y"
-                print "\thelp"
-                print "\t  Manual injection (workflow safe mode)."
-                print ""
-                done=1; insus=0
-              }
-              { print }
-              END { exit(done ? 0 : 3) }
-            ' "$KCONF" > "$tmp" || { rm -f "$tmp"; echo "::warning::menu SUSFS tidak ditemukan, injeksi dibatalkan"; exit 0; }
-            cat "$tmp" > "$KCONF"; rm -f "$tmp"
-            echo "💉 Deklarasi ${SYM} disuntikkan ke Kconfig KSU"
+            printf '\nconfig %s\n\tbool "SUSFS priority uid filter"\n\tdepends on KSU_SUSFS\n\tdefault y\n' "$SYM" >> "$KCONF"
+            echo "💉 ${SYM} disuntikkan ke ${KCONF}"
           fi
-
-          grep -q "^CONFIG_${SYM}=y" "$DEFCONFIG" || echo "CONFIG_${SYM}=y" >> "$DEFCONFIG"
-
-          if grep -rIq "CONFIG_${SYM}" drivers/kernelsu/ fs/ include/linux/ 2>/dev/null; then
-            echo "✅ Source mereferensikan CONFIG_${SYM}"
-          else
-            echo "ℹ️ Source tidak mereferensikan CONFIG_${SYM}: fitur kemungkinan selalu terkompilasi (tanpa gate)"
-          fi
+          grep -q "^CONFIG_${SYM}=y" "$DEF" || echo "CONFIG_${SYM}=y" >> "$DEF"
           
       - name: "🔗 Cek simbol hook SUSFS dan KSU"
         if: matrix.kernel.enable_ksu == true && env.SUSFS_SUPPORT == 'true'
