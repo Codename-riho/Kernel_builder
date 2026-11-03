@@ -16,11 +16,6 @@ on:
     - cron: "0 19 * * 5"
   workflow_dispatch:
      inputs:
-      kernelSpoofVersion:
-        description: "Spoof kernel version (format: X.Y.Z)"
-        required: false
-        type: string
-        default: ""
       ksu_manager:
         description: "Root manager untuk varian KSU"
         type: choice
@@ -235,32 +230,7 @@ jobs:
               sleep 5
             }
           done
-
-      - name: "🦎 Set Kernel Version Spoofing"
-        if: ${{ github.event.inputs.kernelSpoofVersion != '' }}
-        working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
-        env:
-          SPOOF_VERSION: ${{ github.event.inputs.kernelSpoofVersion }}
-        run: |
-          set -euo pipefail
-
-          if ! [[ "$SPOOF_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::kernelSpoofVersion harus berformat X.Y.Z (contoh 5.15.178), dapat: '$SPOOF_VERSION'"
-            exit 1
-          fi
-
-          REAL=$(awk '/^(VERSION|PATCHLEVEL|SUBLEVEL) =/{print $3}' Makefile | head -3 | paste -sd.)
-          grep -q '^KERNELVERSION = ' Makefile \
-            || { echo "::error::Baris KERNELVERSION tidak ditemukan di Makefile"; exit 1; }
-
-          # Hanya versi dasar. Suffix -Cryo-XXX-tanggal tetap dari scripts/setlocalversion.
-          sed -i "s|^KERNELVERSION = .*|KERNELVERSION = ${SPOOF_VERSION}|" Makefile
-          grep -q "^KERNELVERSION = ${SPOOF_VERSION}\$" Makefile \
-            || { echo "::error::Spoof gagal diterapkan"; exit 1; }
-
-          echo "SPOOF_VERSION_APPLIED=${SPOOF_VERSION}" >> "$GITHUB_ENV"
-          echo "✅ ${REAL} → ${SPOOF_VERSION}${{ env.LOCAL_VERSION }}-${{ env.BUILD_TIME }} (uname -r)"
-            
+          
       - name: "🧰 Setup toolchain"
         working-directory: ${{ env.WORK_DIR }}
         env:
@@ -582,8 +552,7 @@ jobs:
             -e CONFIG_LRU_GEN_ENABLED \
             -e CONFIG_CRYPTO_LZ4 \
             -e CONFIG_ZRAM_DEF_COMP_LZ4 \
-            -d CONFIG_CRYPTO_LZO \
-            -d CONFIG_CRYPTO_LZO_RLE \
+            -e CONFIG_CRYPTO_LZO \
             -d CONFIG_ZRAM_DEF_COMP_LZORLE \
             -d CONFIG_ZRAM_DEF_COMP_LZO \
             -d CONFIG_ZRAM_DEF_COMP_ZSTD \
@@ -1326,7 +1295,7 @@ jobs:
           fi
           echo "Membaca $CONFIG_OUT"
 
-          CHECK_LIST="CONFIG_LTO_CLANG_FULL CONFIG_TCP_CONG_BBR3 CONFIG_ZRAM_DEF_COMP_LZ4"
+          CHECK_LIST="CONFIG_LTO_CLANG_FULL CONFIG_TCP_CONG_BBR3 CONFIG_ZRAM_DEF_COMP_LZ4 CONFIG_CRYPTO_LZO"
           if [ "$ENABLE_KSU" = "true" ]; then
             CHECK_LIST="$CHECK_LIST CONFIG_KSU"
             [ "${KSU_MANAGER:-}" = "SukiSU-Ultra+KPM" ] && CHECK_LIST="$CHECK_LIST CONFIG_KPM"
@@ -1359,7 +1328,7 @@ jobs:
           make ARCH=arm64 LLVM=1 O=out olddefconfig
           
           # Pastikan config penting tidak hilang setelah resolusi dependensi
-          CHECK_LIST="CONFIG_LTO_CLANG_FULL CONFIG_TCP_CONG_BBR3 CONFIG_ZRAM_DEF_COMP_LZ4"
+          CHECK_LIST="CONFIG_LTO_CLANG_FULL CONFIG_TCP_CONG_BBR3 CONFIG_ZRAM_DEF_COMP_LZ4 CONFIG_CRYPTO_LZO"
           if [ "$ENABLE_KSU" = "true" ]; then
             CHECK_LIST="$CHECK_LIST CONFIG_KSU"
             [ "${KSU_MANAGER:-}" = "SukiSU-Ultra+KPM" ] && CHECK_LIST="$CHECK_LIST CONFIG_KPM"
