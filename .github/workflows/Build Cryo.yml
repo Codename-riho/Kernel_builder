@@ -180,7 +180,6 @@ jobs:
           mkdir -p "${{ env.KERNEL_LOC_DIR }}"
           echo "BUILD_TIME=$(TZ=Asia/Jakarta date +'%Y-%m-%d')" >> "$GITHUB_ENV"
           echo "✅ Workspace siap"
-          sudo sysctl -q -w vm.swappiness=80   # (sebelumnya step "Tune Swap")
 
           # ── 3) Dependensi build (log disimpan, hanya ditampilkan jika gagal) ──
           APT_LOG=$(mktemp)
