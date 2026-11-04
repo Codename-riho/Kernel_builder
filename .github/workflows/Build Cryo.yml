@@ -207,6 +207,11 @@ jobs:
         uses: pierotofy/set-swap-space@master
         with:
             swap-size-gb: 24
+
+      - name: 🔥 Tune Swap
+        run: |
+            echo "vm.swappiness=90" | sudo tee -a /etc/sysctl.conf
+            sudo sysctl -p
             
       - name: "🎭 Clone kernel source"
         working-directory: ./${{ env.KERNEL_LOC_DIR }}
