@@ -152,18 +152,14 @@ jobs:
       KSU_REF: "${{ inputs.ksu_ref || '' }}"
       SUSFS_COMMIT: "${{ inputs.susfs_commit || '' }}"
 
-    steps:
-      - name: 🔍 Check Space (Before Cleanup)
-        run: |
-          echo "Disk space before cleanup:"
-          df -h /
-          
+    steps:        
       - name: "✨ Setup workspace (cleanup + dependensi)"
         run: |
           set -euo pipefail
 
           avail()  { df -B1 --output=avail / | tail -n 1 | tr -d ' '; }
           human()  { numfmt --to=iec-i --suffix=B --format='%.1f' "$1"; }
+          echo "💾 Disk sebelum cleanup: $(df -h / | awk 'NR==2{print $4" bebas dari "$2" ("$5" terpakai)"}')"
 
           # ── 1) Cleanup tool bawaan runner (senyap) ──
           A0=$(avail)
@@ -184,6 +180,7 @@ jobs:
           mkdir -p "${{ env.KERNEL_LOC_DIR }}"
           echo "BUILD_TIME=$(TZ=Asia/Jakarta date +'%Y-%m-%d')" >> "$GITHUB_ENV"
           echo "✅ Workspace siap"
+          sudo sysctl -q -w vm.swappiness=80   # (sebelumnya step "Tune Swap")
 
           # ── 3) Dependensi build (log disimpan, hanya ditampilkan jika gagal) ──
           APT_LOG=$(mktemp)
@@ -205,17 +202,13 @@ jobs:
 
           echo "✅ Dependensi terpasang"
           echo "📦 Paket baru: $(( PKG1 - PKG0 )) | penyimpanan terpakai: $(human "$USED")"
+          echo "💾 Disk sesudah setup: $(df -h / | awk 'NR==2{print $4" bebas dari "$2" ("$5" terpakai)"}')"
           
       - name: 🚧 Setup SWAP 24GB
         uses: pierotofy/set-swap-space@master
         with:
             swap-size-gb: 24
             
-      - name: 🔥 Tune Swap
-        run: |
-            echo "vm.swappiness=80" | sudo tee -a /etc/sysctl.conf
-            sudo sysctl -p
-
       - name: "🎭 Clone kernel source"
         working-directory: ./${{ env.KERNEL_LOC_DIR }}
         run: |
@@ -479,21 +472,7 @@ jobs:
             args="$args AR=llvm-ar"
             args="$args CC=clang"
             echo "args=$args" >> $GITHUB_OUTPUT
-
-      - name: "📝 Append custom Makefile line"
-        if: ${{ env.TOOLCHAIN_TYPE == 'custom-tools' }}
-        working-directory: ./${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
-        run: |
-          # cc-disable-warning: flag -Wno-* hanya dipasang jika compiler mengenalnya
-          # (clang lama seperti ZyC 14 tidak punya dua flag pertama)
-          cat >> Makefile <<'EOF'
-          KBUILD_CFLAGS += $(call cc-disable-warning,default-const-init-unsafe)
-          KBUILD_CFLAGS += $(call cc-disable-warning,uninitialized-const-pointer)
-          KBUILD_CFLAGS += -Wno-implicit-function-declaration
-          KBUILD_CFLAGS += -Wno-sometimes-uninitialized
-          EOF
-          echo "Custom Makefile line added successfully"
-
+            
       - name: "🧩 Configure kernel & patches"
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         run: |
@@ -637,20 +616,7 @@ jobs:
             echo "::error::masih ada penanda konflik di net/ atau include/"; exit 1
           fi
           echo "✅ BBRv3 + PLB terpasang"
-          
-      - name: "🏷️ Force short localversion"
-        working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
-        run: |
-          VER="${{ env.LOCAL_VERSION }}-${{ env.BUILD_TIME }}"
-          cat > scripts/setlocalversion << EOF
-          #!/bin/sh
-          # Cryo: fixed short localversion (ignore git tags/dirty)
-          printf '%s' "$VER"
-          EOF
-          chmod +x scripts/setlocalversion
-          rm -f .scmversion localversion*
-          echo "Localversion: $VER"
-                    
+                         
       - name: "🏜️📦 Add Droidspaces Support (kABI patch + GKI defconfig)"
         if: ${{ env.DROIDSPACES_SUPPORT == 'true' }}
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
@@ -834,98 +800,84 @@ jobs:
             echo "KSU_REF_USED=${REF:-latest tag}"
           } >> "$GITHUB_ENV"
 
-      - name: "🩹 Patch manager with SUSFS"
-        if: ${{ matrix.kernel.enable_ksu == true && env.SUSFS_SUPPORT == 'true' }}
-        working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
-        env:
-          KSU_MANAGER: ${{ inputs.ksu_manager || 'BakaSU' }}
-          SUSFS_BRANCH: gki-android13-5.15
-          SUSFS_REPO: https://gitlab.com/simonpunk/susfs4ksu.git
-        run: |
-          set -euo pipefail
-          die() { echo "::error::$*"; exit 1; }
-
-          if [ "$NEED_SUSFS_PATCH" != 1 ]; then
-            echo "✅ $KSU_MANAGER sudah memakai SUSFS bawaan. Patch manual dilewati."
-            exit 0
-          fi
-
-          # KSU_DIR = <repo>/kernel (symlink drivers/kernelsu); patch memakai path "kernel/..."
-          # sehingga harus diterapkan dari akar repo manager.
-          KSU_ROOT=$(git -C "$KSU_DIR" rev-parse --show-toplevel 2>/dev/null || true)
-          [ -n "$KSU_ROOT" ] || KSU_ROOT="$(dirname "$KSU_DIR")"
-
-          SUSFS_TMP=$(mktemp -d)
-          trap 'rm -rf "$SUSFS_TMP"' EXIT
-
-          echo "📦 Clone SUSFS4KSU ($SUSFS_BRANCH)"
-          ok=0
-          for i in 1 2 3; do
-            if git clone -q --depth=1 -b "$SUSFS_BRANCH" "$SUSFS_REPO" "$SUSFS_TMP/susfs4ksu"; then ok=1; break; fi
-            echo "⚠️ Clone gagal ($i/3), mencoba lagi..."; rm -rf "$SUSFS_TMP/susfs4ksu"; sleep $((i*10))
-          done
-          [ "$ok" = 1 ] || die "Gagal clone susfs4ksu setelah 3 kali percobaan"
-          SUSFS_HEAD=$(git -C "$SUSFS_TMP/susfs4ksu" rev-parse --short HEAD)
-
-          PATCH_FILE="$SUSFS_TMP/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
-          [ -f "$PATCH_FILE" ] || die "Patch SUSFS tidak ditemukan: kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
-
-          if patch -d "$KSU_ROOT" -p1 -R --dry-run -s -f < "$PATCH_FILE" >/dev/null 2>&1; then
-            echo "✅ Patch SUSFS sudah terpasang di $KSU_MANAGER (susfs4ksu@$SUSFS_HEAD)"
-          elif patch -d "$KSU_ROOT" -p1 --forward --dry-run < "$PATCH_FILE" >"$SUSFS_TMP/dry.log" 2>&1; then
-            patch -d "$KSU_ROOT" -p1 --forward --batch --no-backup-if-mismatch < "$PATCH_FILE" >/dev/null \
-              || die "Patch SUSFS gagal saat diterapkan"
-            echo "✅ Patch SUSFS berhasil dipasang di $KSU_MANAGER (susfs4ksu@$SUSFS_HEAD)"
-            # fuzz tinggi = konteks tidak cocok persis; patch bisa mendarat di tempat yang salah
-            if grep -qi "fuzz" "$SUSFS_TMP/dry.log"; then
-              echo "::warning::Patch SUSFS diterapkan dengan fuzz (konteks tidak persis). Periksa hasilnya:"
-              grep -i "fuzz\|offset" "$SUSFS_TMP/dry.log"
-            fi
-          else
-            cat "$SUSFS_TMP/dry.log"
-            die "Patch SUSFS tidak cocok dengan $KSU_MANAGER (ref: ${KSU_REF_USED:-?}). Proses dibatalkan, tidak ada perubahan."
-          fi
-        
-      - name: "🧩 Extra manager patch & enable KSU"
+      - name: "🩹 Patch manager (SUSFS + extra) & enable KSU"
         if: matrix.kernel.enable_ksu == true
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
           KSU_MANAGER: ${{ inputs.ksu_manager || 'BakaSU' }}
           DEFCONFIG_NAME: ${{ env.DEFCONFIG_NAME }}
           VARIANT_NAME: ${{ matrix.kernel.name }}
+          SUSFS_BRANCH: gki-android13-5.15
+          SUSFS_REPO: https://gitlab.com/simonpunk/susfs4ksu.git
         run: |
           set -euo pipefail
           die() { echo "::error::$*"; exit 1; }
 
-          # Cek apakah varian manager ini memiliki ekstra patch yang harus diterapkan
+          TMPD=$(mktemp -d)
+          trap 'rm -rf "$TMPD"' EXIT
+
+          # KSU_DIR = <repo>/kernel (symlink drivers/kernelsu); patch memakai path "kernel/..."
+          # sehingga harus diterapkan dari akar repo manager.
+          KSU_ROOT=$(git -C "$KSU_DIR" rev-parse --show-toplevel 2>/dev/null || true)
+          [ -n "$KSU_ROOT" ] || KSU_ROOT="$(dirname "$KSU_DIR")"
+
+          # ── 1) Patch SUSFS ke manager ──
+          if [ "${SUSFS_SUPPORT:-false}" != "true" ]; then
+            echo "ℹ️ SUSFS nonaktif, patch SUSFS manager dilewati."
+          elif [ "${NEED_SUSFS_PATCH:-0}" != 1 ]; then
+            echo "✅ $KSU_MANAGER sudah memakai SUSFS bawaan. Patch manual dilewati."
+          else
+            echo "📦 Clone SUSFS4KSU ($SUSFS_BRANCH)"
+            ok=0
+            for i in 1 2 3; do
+              if git clone -q --depth=1 -b "$SUSFS_BRANCH" "$SUSFS_REPO" "$TMPD/susfs4ksu"; then ok=1; break; fi
+              echo "⚠️ Clone gagal ($i/3), mencoba lagi..."; rm -rf "$TMPD/susfs4ksu"; sleep $((i*10))
+            done
+            [ "$ok" = 1 ] || die "Gagal clone susfs4ksu setelah 3 kali percobaan"
+            SUSFS_HEAD=$(git -C "$TMPD/susfs4ksu" rev-parse --short HEAD)
+
+            PATCH_FILE="$TMPD/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+            [ -f "$PATCH_FILE" ] || die "Patch SUSFS tidak ditemukan: kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+
+            if patch -d "$KSU_ROOT" -p1 -R --dry-run -s -f < "$PATCH_FILE" >/dev/null 2>&1; then
+              echo "✅ Patch SUSFS sudah terpasang di $KSU_MANAGER (susfs4ksu@$SUSFS_HEAD)"
+            elif patch -d "$KSU_ROOT" -p1 --forward --dry-run < "$PATCH_FILE" >"$TMPD/dry.log" 2>&1; then
+              patch -d "$KSU_ROOT" -p1 --forward --batch --no-backup-if-mismatch < "$PATCH_FILE" >/dev/null \
+                || die "Patch SUSFS gagal saat diterapkan"
+              echo "✅ Patch SUSFS berhasil dipasang di $KSU_MANAGER (susfs4ksu@$SUSFS_HEAD)"
+              # fuzz tinggi = konteks tidak cocok persis; patch bisa mendarat di tempat yang salah
+              if grep -qi "fuzz" "$TMPD/dry.log"; then
+                echo "::warning::Patch SUSFS diterapkan dengan fuzz (konteks tidak persis). Periksa hasilnya:"
+                grep -i "fuzz\|offset" "$TMPD/dry.log"
+              fi
+            else
+              cat "$TMPD/dry.log"
+              die "Patch SUSFS tidak cocok dengan $KSU_MANAGER (ref: ${KSU_REF_USED:-?}). Proses dibatalkan, tidak ada perubahan."
+            fi
+          fi
+
+          # ── 2) Ekstra patch manager (jika varian punya) ──
           if [ -n "${EXTRA_PATCH_URL:-}" ]; then
             echo "⚙️ Ekstra patch ditemukan untuk varian $KSU_MANAGER."
             echo "Mengunduh dari: $EXTRA_PATCH_URL"
 
-            EXTRA_PATCH_FILE=$(mktemp)
-            trap 'rm -f "$EXTRA_PATCH_FILE"' EXIT
+            EXTRA_PATCH_FILE="$TMPD/extra.patch"
             curl -fsSL --retry 3 -o "$EXTRA_PATCH_FILE" "$EXTRA_PATCH_URL" \
               || die "Fatal Error: Gagal mengunduh ekstra patch dari URL tersebut!"
             [ -s "$EXTRA_PATCH_FILE" ] || die "Fatal Error: Ekstra patch kosong!"
 
-            # KSU_DIR = <repo>/kernel (symlink drivers/kernelsu); patch memakai path "kernel/..."
-            # sehingga harus diterapkan dari akar repo manager.
-            KSU_ROOT=$(git -C "$KSU_DIR" rev-parse --show-toplevel 2>/dev/null || true)
-            [ -n "$KSU_ROOT" ] || KSU_ROOT="$(dirname "$KSU_DIR")"
             echo "Menerapkan ekstra patch ke $KSU_ROOT..."
-
             if patch -d "$KSU_ROOT" -p1 -R --dry-run -s -f < "$EXTRA_PATCH_FILE" >/dev/null 2>&1; then
               echo "✅ Ekstra patch sudah terpasang, dilewati."
-            elif patch -d "$KSU_ROOT" -p1 --forward --dry-run < "$EXTRA_PATCH_FILE" >/tmp/ksu_extra.log 2>&1; then
+            elif patch -d "$KSU_ROOT" -p1 --forward --dry-run < "$EXTRA_PATCH_FILE" >"$TMPD/extra.log" 2>&1; then
               patch -d "$KSU_ROOT" -p1 --forward --batch --no-backup-if-mismatch < "$EXTRA_PATCH_FILE" >/dev/null \
                 || die "Fatal Error: Ekstra patch gagal diterapkan pada $KSU_MANAGER (ref: ${KSU_REF_USED:-?})!"
               echo "✅ Ekstra patch berhasil diterapkan."
             else
-              cat /tmp/ksu_extra.log
+              cat "$TMPD/extra.log"
               die "Fatal Error: Ekstra patch tidak cocok dengan $KSU_MANAGER (ref: ${KSU_REF_USED:-?})!"
             fi
           else
-            # Jika EXTRA_PATCH_URL kosong, lewati proses ekstra patch
             echo "✅ Tidak ada ekstra patch yang diperlukan untuk varian $KSU_MANAGER. Melanjutkan proses..."
           fi
 
@@ -950,7 +902,7 @@ jobs:
 
           VER=$(git -C "$KSU_DIR" describe --tags --always 2>/dev/null || echo Unknown)
           echo "✅ $KSU_MANAGER setup selesai dengan versi: $VER"
-          
+
           # Detail KSU untuk ringkasan akhir (job "Package Kernels")
           # Format: varian|manager|ref|versi|kpm|susfs|patch-ekstra
           if [ "${SUSFS_SUPPORT:-false}" != "true" ]; then SUSFS_TXT="nonaktif"
@@ -960,7 +912,7 @@ jobs:
           [ -z "${EXTRA_PATCH_URL:-}" ] || EXTRA_TXT="$(basename "${EXTRA_PATCH_URL%%\?*}")"
           echo "${VARIANT_NAME}|${KSU_MANAGER}|${KSU_REF_USED:-?}|${VER}|${KPM_STATE}|${SUSFS_TXT}|${EXTRA_TXT}" \
             > "$WORK_DIR/ksu_info.txt"
-          
+        
       - name: "ඞ Inject SUSFS Integration"
         if: ${{ matrix.kernel.enable_ksu == true && env.SUSFS_SUPPORT == 'true' }}
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
@@ -1174,6 +1126,31 @@ jobs:
           
           echo "🎉 SUSFS Integration setup complete! (hmm SUS ඞ )"
 
+          # ── Cek simbol hook SUSFS dan KSU (hanya peringatan, tidak menggagalkan build) ──
+          (
+          set +e
+          set -u
+          KSU_DIR="${KSU_DIR:-drivers/kernelsu}"
+          MISSING=0; TOTAL=0
+          for s in ksu_preinit_handle_post_execveat ksu_setup_preinit_file my_setprocattr my_write_context my_write_access; do
+            TOTAL=$((TOTAL+1))
+            CALLED=$(grep -rnw --include='*.c' --include='*.h' "$s" fs security kernel include 2>/dev/null | grep -v 'include/linux/susfs')
+            DEF=$(grep -rnw "$s" "$KSU_DIR" 2>/dev/null)
+            NC=$(printf '%s' "$CALLED" | grep -c .)
+            ND=$(printf '%s' "$DEF" | grep -c .)
+            if [ "$ND" -gt 0 ]; then
+              echo "✅ $s (kernel: $NC, KSU: $ND)"
+            elif [ "$NC" -gt 0 ]; then
+              echo "❌ $s dipanggil di $(printf '%s' "$CALLED" | head -1 | cut -d: -f1,2), tidak ada di KSU"
+              MISSING=$((MISSING+1))
+            else
+              echo "➖ $s (tidak dipakai kernel)"
+            fi
+          done
+          echo "Hilang: $MISSING/$TOTAL | ksu_selinux_hide_running: $(grep -c ksu_selinux_hide_running security/selinux/hooks.c 2>/dev/null)"
+          [ "$MISSING" -eq 0 ] || echo "::warning::Ada hook SUSFS di kernel yang tidak punya pasangan di KSU, link akan gagal"
+          )
+
       - name: "💉 Safe-mode inject PRIORITY_UID_FILTER"
         if: matrix.kernel.enable_ksu == true
         shell: bash
@@ -1220,47 +1197,43 @@ jobs:
           else
             echo "ℹ️ Source tidak mereferensikan CONFIG_${SYM}: fitur kemungkinan selalu terkompilasi (tanpa gate)"
           fi
-          
-      - name: "🔗 Cek simbol hook SUSFS dan KSU"
-        if: matrix.kernel.enable_ksu == true && env.SUSFS_SUPPORT == 'true'
-        working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
-        run: |
-          set +e
-          set -u
-          KSU_DIR="${KSU_DIR:-drivers/kernelsu}"
-          MISSING=0; TOTAL=0
-          for s in ksu_preinit_handle_post_execveat ksu_setup_preinit_file my_setprocattr my_write_context my_write_access; do
-            TOTAL=$((TOTAL+1))
-            CALLED=$(grep -rnw --include='*.c' --include='*.h' "$s" fs security kernel include 2>/dev/null | grep -v 'include/linux/susfs')
-            DEF=$(grep -rnw "$s" "$KSU_DIR" 2>/dev/null)
-            NC=$(printf '%s' "$CALLED" | grep -c .)
-            ND=$(printf '%s' "$DEF" | grep -c .)
-            if [ "$ND" -gt 0 ]; then
-              echo "✅ $s (kernel: $NC, KSU: $ND)"
-            elif [ "$NC" -gt 0 ]; then
-              echo "❌ $s dipanggil di $(printf '%s' "$CALLED" | head -1 | cut -d: -f1,2), tidak ada di KSU"
-              MISSING=$((MISSING+1))
-            else
-              echo "➖ $s (tidak dipakai kernel)"
-            fi
-          done
-          echo "Hilang: $MISSING/$TOTAL | ksu_selinux_hide_running: $(grep -c ksu_selinux_hide_running security/selinux/hooks.c 2>/dev/null)"
-          [ "$MISSING" -eq 0 ] || echo "::warning::Ada hook SUSFS di kernel yang tidak punya pasangan di KSU, link akan gagal"
-                  
+                          
       - name: "📝 Append custom Makefile line"
-        if: ${{ env.TOOLCHAIN_TYPE == 'android-tools' }}
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         run: |
-         echo 'KBUILD_CFLAGS += -Wno-implicit-function-declaration' >> Makefile
-               
-      - name: "✍️ Set kernel build identity"
+          # cc-disable-warning: flag -Wno-* hanya dipasang jika compiler mengenalnya
+          # (clang lama seperti ZyC 14 tidak punya dua flag pertama)
+          if [ "$TOOLCHAIN_TYPE" = "custom-tools" ]; then
+            printf '%s\n' \
+              'KBUILD_CFLAGS += $(call cc-disable-warning,default-const-init-unsafe)' \
+              'KBUILD_CFLAGS += $(call cc-disable-warning,uninitialized-const-pointer)' \
+              'KBUILD_CFLAGS += -Wno-implicit-function-declaration' \
+              'KBUILD_CFLAGS += -Wno-sometimes-uninitialized' >> Makefile
+          else
+            echo 'KBUILD_CFLAGS += -Wno-implicit-function-declaration' >> Makefile
+          fi
+          echo "✅ Flag Makefile ($TOOLCHAIN_TYPE) ditambahkan"
+
+      - name: "✍️ Set kernel identity (localversion + build by/host)"
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         run: |
+          # ── Localversion pendek tetap (abaikan git tag/dirty) ──
+          VER="${{ env.LOCAL_VERSION }}-${{ env.BUILD_TIME }}"
+          cat > scripts/setlocalversion << EOF
+          #!/bin/sh
+          # Cryo: fixed short localversion (ignore git tags/dirty)
+          printf '%s' "$VER"
+          EOF
+          chmod +x scripts/setlocalversion
+          rm -f .scmversion localversion*
+          echo "Localversion: $VER"
+
+          # ── Compile by/host ──
           BY_VAL="Dyatz-Snezhnaya"
           HOST_VAL="GitHub-Ubuntu"
           F=scripts/mkcompile_h
           [ -f "$F" ] || { echo "::error::$F tidak ditemukan"; exit 1; }
-          
+
           # $1 = BY|HOST, $2 = nilai yang diinginkan
           set_identity() {
             local key="LINUX_COMPILE_$1" val="$2"
@@ -1285,7 +1258,7 @@ jobs:
 
           # Bukti hasil akhir
           grep -nE "LINUX_COMPILE_(BY|HOST)" "$F"
-
+               
       - name: "🛡️ Guard VINTF"
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         run: |
@@ -1316,17 +1289,7 @@ jobs:
 
           echo "✅ Guard VINTF lolos: IPv6 NAT/Masquerade nonaktif"
           
-      - name: "🔨 Build kernel"
-        if: ${{ env.TOOLCHAIN_TYPE == 'android-tools' }}
-        working-directory: ${{ env.WORK_DIR }}    
-        run: |
-          set -o pipefail
-          
-          LTO=full \
-          BUILD_CONFIG=${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}/build.config.gki.aarch64 \
-          build/build.sh -j$(nproc --all) 2>&1 | tee build_full.log
-
-      - name: "🔎 Cek .config akhir (android-tools)"
+      - name: "🔨 Build kernel (android-tools)"
         if: ${{ env.TOOLCHAIN_TYPE == 'android-tools' }}
         working-directory: ${{ env.WORK_DIR }}
         env:
@@ -1334,7 +1297,15 @@ jobs:
           ENABLE_KSU: ${{ matrix.kernel.enable_ksu }}
           VARIANT_NAME: ${{ matrix.kernel.name }}
         run: |
-          set -uo pipefail
+          set -o pipefail
+          trap 'echo "💾 Sisa disk:"; df -h / | tail -n 1' EXIT
+
+          LTO=full \
+          BUILD_CONFIG=${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}/build.config.gki.aarch64 \
+          build/build.sh -j$(nproc --all) 2>&1 | tee build_full.log
+
+          # ── Cek .config akhir ──
+          set -u
           CONFIG_OUT=$(find out -maxdepth 5 -type f -name .config -print -quit 2>/dev/null || true)
           if [ -z "$CONFIG_OUT" ]; then
             echo "::warning::.config hasil build.sh tidak ditemukan di out/"
@@ -1358,8 +1329,8 @@ jobs:
                         echo "::warning::[$VARIANT_NAME] $c tidak aktif di .config akhir" ;;
             esac
           done
-
-      - name: "👍 Make defconfig"
+          
+      - name: "🎶 Build kernel (custom-tools)"
         if: ${{ env.TOOLCHAIN_TYPE == 'custom-tools' }}
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
@@ -1369,18 +1340,19 @@ jobs:
           VARIANT_NAME: ${{ matrix.kernel.name }}
         run: |
           set -euo pipefail
+          trap 'echo "💾 Sisa disk:"; df -h / | tail -n 1' EXIT
           clang --version | head -n1
           make ARCH=arm64 LLVM=1 O=out "$DEFCONFIG_NAME"
           # samakan dengan jalur build.sh (LTO=full)
           scripts/config --file out/.config -d LTO_CLANG_THIN -e LTO_CLANG_FULL
           make ARCH=arm64 LLVM=1 O=out olddefconfig
-          
+
           # Pastikan config penting tidak hilang setelah resolusi dependensi
           CHECK_LIST="CONFIG_LTO_CLANG_FULL CONFIG_TCP_CONG_BBR3 CONFIG_ZRAM_DEF_COMP_LZ4 CONFIG_CRYPTO_LZO"
           if [ "$ENABLE_KSU" = "true" ]; then
             CHECK_LIST="$CHECK_LIST CONFIG_KSU"
             [ "${KSU_MANAGER:-}" = "SukiSU-Ultra+KPM" ] && CHECK_LIST="$CHECK_LIST CONFIG_KPM"
-            [ "${SUSFS_SUPPORT:-}" = "Enabled" ] && CHECK_LIST="$CHECK_LIST CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER"
+            [ "${SUSFS_SUPPORT:-}" = "true" ] && CHECK_LIST="$CHECK_LIST CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER"
           fi
 
           # Baca .config sekali saja: daftar semua opsi yang bernilai =y
@@ -1409,15 +1381,8 @@ jobs:
               echo "::endgroup::"
               ;;
           esac
-          
-      - name: "🎶 Build kernel"
-        if: ${{ env.TOOLCHAIN_TYPE == 'custom-tools' }}
-        working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
-        env:
-          KBUILD_BUILD_USER: dyatz
-          KBUILD_BUILD_HOST: GitHub
-        run: |
-          set -o pipefail
+
+          # ── Build ──
           make ARCH=arm64 LLVM=1 O=out -j"$(nproc --all)" Image 2>&1 | tee "$WORK_DIR/build_full.log"
                                   
       - name: "🚨 Kumpulkan Log Error (Jika Gagal)"
