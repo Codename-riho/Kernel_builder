@@ -1248,21 +1248,7 @@ jobs:
 
           # Bukti hasil akhir
           grep -nE "LINUX_COMPILE_(BY|HOST)" "$F"
-
-      - name: 🌡️ Patch thermal bind clamp
-        working-directory: ${{ env.KERNEL_LOC_DIR }}
-        run: |
-         python3 - <<'EOF'
-         p = "drivers/thermal/thermal_core.c"
-         print(f"🔍 Membaca {p}...")
-         s = open(p).read()
-         old = "\tif (lower > upper || upper > cdev->max_state)\n\t\treturn -EINVAL;\n"
-         new = "\tif (upper > cdev->max_state)\n\t\tupper = cdev->max_state;\n\tif (lower > upper)\n\t\tlower = upper;\n"
-         assert old in s, "❌ pattern not found"
-         open(p, "w").write(s.replace(old, new, 1))
-         print("✅ Patch thermal clamp berhasil diterapkan!")
-         EOF
-               
+          
       - name: "🛡️ Guard VINTF"
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         run: |
@@ -1292,7 +1278,21 @@ jobs:
           fi
 
           echo "✅ Guard VINTF lolos: IPv6 NAT/Masquerade nonaktif"
-          
+
+      - name: 🌡️ Patch thermal bind clamp
+        working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
+        run: |
+            python3 - <<'EOF'
+            p = "drivers/thermal/thermal_core.c"
+            print(f"🔍 Membaca {p}...")
+            s = open(p).read()
+            old = "\tif (lower > upper || upper > cdev->max_state)\n\t\treturn -EINVAL;\n"
+            new = "\tif (upper > cdev->max_state)\n\t\tupper = cdev->max_state;\n\tif (lower > upper)\n\t\tlower = upper;\n"
+            assert old in s, "❌ pattern not found"
+            open(p, "w").write(s.replace(old, new, 1))
+            print("✅ Patch thermal clamp berhasil diterapkan!")
+            EOF
+         
       - name: "🔨 Build kernel (android-tools)"
         if: ${{ env.TOOLCHAIN_TYPE == 'android-tools' }}
         working-directory: ${{ env.WORK_DIR }}
