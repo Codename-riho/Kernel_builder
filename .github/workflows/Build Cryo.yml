@@ -1287,27 +1287,24 @@ jobs:
           print(f"🔍 Membaca {path}...")
 
           with open(path) as f:
-             src = f.read()
+              src = f.read()
 
-          old = (
-               "\tif (lower > upper || upper > max_state)\n"
-               "\t\treturn -EINVAL;\n"
-             )
-          new = (
-              "\tif (upper > max_state)\n"
-              "\t\tupper = max_state;\n"
-              "\tif (lower > upper)\n"
-              "\t\tlower = upper;\n"
-             )
+          old = ("\tif (lower > upper || upper > max_state)\n"
+                 "\t\treturn -EINVAL;\n")
 
-             assert src.count(old) == 1, "❌ pattern not found / tidak unik"
+          new = ("\tif (upper > max_state)\n"
+                 "\t\tupper = max_state;\n"
+                 "\tif (lower > upper)\n"
+                 "\t\tlower = upper;\n")
 
-             with open(path, "w") as f:
-                 f.write(src.replace(old, new, 1))
+          assert src.count(old) == 1, "❌ pattern not found / tidak unik"
 
-           print("✅ Patch thermal clamp berhasil diterapkan!")
-           EOF
-         
+          with open(path, "w") as f:
+              f.write(src.replace(old, new, 1))
+
+          print("✅ Patch thermal clamp berhasil diterapkan!")
+          EOF
+                      
       - name: "🔨 Build kernel (android-tools)"
         if: ${{ env.TOOLCHAIN_TYPE == 'android-tools' }}
         working-directory: ${{ env.WORK_DIR }}
