@@ -1212,6 +1212,9 @@ jobs:
           else
             echo 'KBUILD_CFLAGS += -Wno-implicit-function-declaration' >> Makefile
           fi
+          # Tool host (dtc): redam peringatan clang baru. Harus KBUILD_HOSTCFLAGS, bukan HOSTCFLAGS.
+          echo 'KBUILD_HOSTCFLAGS += -Wno-unused-but-set-global' >> Makefile
+          
           echo "✅ Flag Makefile ($TOOLCHAIN_TYPE) ditambahkan"
 
       - name: "✍️ Set kernel identity (localversion + build by/host)"
@@ -1296,6 +1299,7 @@ jobs:
           KSU_MANAGER: ${{ inputs.ksu_manager || 'BakaSU' }}
           ENABLE_KSU: ${{ matrix.kernel.enable_ksu }}
           VARIANT_NAME: ${{ matrix.kernel.name }}
+          PYTHONWARNINGS: ignore::SyntaxWarning
         run: |
           set -o pipefail
           trap 'echo "💾 Sisa disk:"; df -h / | tail -n 1' EXIT
@@ -1338,6 +1342,7 @@ jobs:
           ENABLE_KSU: ${{ matrix.kernel.enable_ksu }}
           SUSFS_SUPPORT: ${{ env.SUSFS_SUPPORT }}
           VARIANT_NAME: ${{ matrix.kernel.name }}
+          PYTHONWARNINGS: ignore::SyntaxWarning
         run: |
           set -euo pipefail
           trap 'echo "💾 Sisa disk:"; df -h / | tail -n 1' EXIT
