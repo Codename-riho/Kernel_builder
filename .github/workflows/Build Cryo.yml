@@ -544,19 +544,6 @@ jobs:
           # Remove duplicate lines safely
           sed -i '/ZRAM_DEF_COMP_LZO/d' "$CONFIG_FILE" || true
 
-          # --- WireGuard Core & Hardware Acceleration ---
-          scripts/config --file "$CONFIG_FILE" \
-          -e CONFIG_WIREGUARD \
-          -e CONFIG_NET_UDP_TUNNEL \
-          -e CONFIG_DST_CACHE \
-          -e CONFIG_CRYPTO_CHACHA20POLY1305 \
-          -e CONFIG_CRYPTO_CHACHA20_NEON \
-          -e CONFIG_CRYPTO_POLY1305_NEON \
-          -e CONFIG_CRYPTO_CURVE25519 \
-          -e CONFIG_IP_ADVANCED_ROUTER \
-          -e CONFIG_IP_MULTIPLE_TABLES \
-          -e CONFIG_NETFILTER_XT_MATCH_FWMARK
-          
           #Petakan konfigurasi otomatis untuk shuedule
             echo "📦 TOOLCHAIN_TYPE=${TOOLCHAIN_TYPE}"
             echo "🏜️📦 DROIDSPACES_SUPPORT=${DROIDSPACES_SUPPORT}"
@@ -1261,6 +1248,20 @@ jobs:
 
           # Bukti hasil akhir
           grep -nE "LINUX_COMPILE_(BY|HOST)" "$F"
+
+      - name: 🌡️ Patch thermal bind clamp
+        working-directory: ${{ env.KERNEL_LOC_DIR }}
+        run: |
+         python3 - <<'EOF'
+         p = "drivers/thermal/thermal_core.c"
+         print(f"🔍 Membaca {p}...")
+         s = open(p).read()
+         old = "\tif (lower > upper || upper > cdev->max_state)\n\t\treturn -EINVAL;\n"
+         new = "\tif (upper > cdev->max_state)\n\t\tupper = cdev->max_state;\n\tif (lower > upper)\n\t\tlower = upper;\n"
+         assert old in s, "❌ pattern not found"
+         open(p, "w").write(s.replace(old, new, 1))
+         print("✅ Patch thermal clamp berhasil diterapkan!")
+         EOF
                
       - name: "🛡️ Guard VINTF"
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
