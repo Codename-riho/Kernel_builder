@@ -618,7 +618,7 @@ jobs:
           echo "📦 Mengunduh Kprofiles..."
           rm -rf drivers/misc/kprofiles
           for i in 1 2 3; do
-            git clone --depth=1 https://github.com/dakkshesh07/Kprofiles.git drivers/misc/kprofiles
+            git clone --depth=1 https://github.com/dakkshesh07/Kprofiles.git drivers/misc/kprofiles && break
             echo "⚠️ Clone gagal ($i/3)"; rm -rf drivers/misc/kprofiles; sleep $((i*10))
             [ "$i" = 3 ] && { echo "::error::Gagal clone Kprofiles"; exit 1; }
           done
