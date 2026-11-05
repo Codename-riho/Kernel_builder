@@ -807,8 +807,6 @@ jobs:
           TMPD=$(mktemp -d)
           trap 'rm -rf "$TMPD"' EXIT
 
-          # KSU_DIR = <repo>/kernel (symlink drivers/kernelsu); patch memakai path "kernel/..."
-          # sehingga harus diterapkan dari akar repo manager.
           KSU_ROOT=$(git -C "$KSU_DIR" rev-parse --show-toplevel 2>/dev/null || true)
           [ -n "$KSU_ROOT" ] || KSU_ROOT="$(dirname "$KSU_DIR")"
 
@@ -821,102 +819,133 @@ jobs:
             echo "📦 Clone SUSFS4KSU ($SUSFS_BRANCH)"
             ok=0
             for i in 1 2 3; do
-              if git clone -q --depth=1 -b "$SUSFS_BRANCH" "$SUSFS_REPO" "$TMPD/susfs4ksu"; then ok=1; break; fi
-              echo "⚠️ Clone gagal ($i/3), mencoba lagi..."; rm -rf "$TMPD/susfs4ksu"; sleep $((i*10))
+              if git clone -q --depth=1 -b "$SUSFS_BRANCH" \
+                "$SUSFS_REPO" "$TMPD/susfs4ksu"; then
+                ok=1
+                break
+              fi
+              echo "⚠️ Clone gagal ($i/3), mencoba lagi..."
+              rm -rf "$TMPD/susfs4ksu"
+              sleep $((i * 10))
             done
             [ "$ok" = 1 ] || die "Gagal clone susfs4ksu setelah 3 kali percobaan"
+
             SUSFS_HEAD=$(git -C "$TMPD/susfs4ksu" rev-parse --short HEAD)
-
             PATCH_FILE="$TMPD/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
-            [ -f "$PATCH_FILE" ] || die "Patch SUSFS tidak ditemukan: kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+            [ -f "$PATCH_FILE" ] || die "Patch SUSFS tidak ditemukan: $PATCH_FILE"
 
-          DRY="$SUSFS_TMP/dry.log"
-          can_apply() { patch -d "$KSU_ROOT" -p1 --forward --batch --dry-run < "$PATCH_FILE" >"$DRY" 2>&1; }
+            DRY="$TMPD/dry.log"
+            can_apply() {
+              patch -d "$KSU_ROOT" -p1 --forward --batch --dry-run \
+                < "$PATCH_FILE" >"$DRY" 2>&1
+            }
 
-          if patch -d "$KSU_ROOT" -p1 -R --batch --dry-run -s -f < "$PATCH_FILE" >/dev/null 2>&1; then
-            echo "✅ Patch SUSFS sudah terpasang di $KSU_MANAGER (susfs4ksu@$SUSFS_HEAD)"
-            exit 0
+            # Jika patch sudah terpasang, lanjutkan step; jangan keluar dari script.
+            if patch -d "$KSU_ROOT" -p1 -R --batch --dry-run -s -f \
+              < "$PATCH_FILE" >/dev/null 2>&1; then
+              echo "✅ Patch SUSFS sudah terpasang di $KSU_MANAGER (susfs4ksu@$SUSFS_HEAD)"
+            else
+              # Jika ref tidak dipaksa dan patch belum cocok, cari commit main yang cocok.
+              if ! can_apply && [ -z "${KSU_REF:-}" ]; then
+                [ -d "$KSU_ROOT/.git" ] \
+                  || die "$KSU_ROOT bukan checkout git; tidak bisa mencari commit yang cocok"
+
+                echo "⚠️ Patch tidak cocok dengan ${KSU_REF_USED:-latest tag}. Mencari commit main yang cocok (maks. 80 terbaru)..."
+                git -C "$KSU_ROOT" fetch -q --depth=80 origin main \
+                  || die "Gagal fetch branch main dari origin"
+
+                FOUND=""
+                for c in $(git -C "$KSU_ROOT" rev-list -n 80 FETCH_HEAD); do
+                  git -C "$KSU_ROOT" checkout -q -f "$c" || continue
+                  if can_apply; then
+                    FOUND="$c"
+                    break
+                  fi
+                done
+
+                [ -n "$FOUND" ] || {
+                  cat "$DRY"
+                  die "Tidak ada dari 80 commit main terbaru yang cocok dengan patch SUSFS@$SUSFS_HEAD. Isi ksu_ref dengan commit/tag tertentu."
+                }
+
+                echo "✅ Memakai commit main ${FOUND:0:8} yang cocok dengan patch"
+                echo "KSU_REF_USED=main@${FOUND:0:8} (otomatis)" >> "$GITHUB_ENV"
+              fi
+
+              can_apply || {
+                cat "$DRY"
+                die "Patch SUSFS tidak cocok dengan $KSU_MANAGER (ref: ${KSU_REF:-${KSU_REF_USED:-?}})"
+              }
+
+              patch -d "$KSU_ROOT" -p1 --forward --batch --no-backup-if-mismatch \
+                < "$PATCH_FILE" >/dev/null \
+                || die "Patch SUSFS gagal saat diterapkan"
+
+              echo "✅ Patch SUSFS berhasil dipasang di $KSU_MANAGER (susfs4ksu@$SUSFS_HEAD)"
+              if grep -qi "fuzz" "$DRY"; then
+                echo "::warning::Patch SUSFS diterapkan dengan fuzz/offset; periksa hasilnya."
+                grep -i "fuzz\|offset" "$DRY" || true
+              fi
+            fi
           fi
 
-          # Patch SUSFS dibuat untuk KernelSU "main" terbaru, bukan untuk tag rilis lama.
-          # Jika ref tidak dipaksa pengguna dan tidak cocok, cari commit main terbaru yang cocok.
-          if ! can_apply && [ -z "${KSU_REF:-}" ]; then
-            [ -d "$KSU_ROOT/.git" ] || die "$KSU_ROOT bukan checkout git, tidak bisa mencari commit yang cocok"
-            echo "⚠️ Patch tidak cocok dengan ${KSU_REF_USED:-latest tag}. Mencari commit main yang cocok (maks. 80 terbaru)..."
-            git -C "$KSU_ROOT" fetch -q --depth=80 origin main || die "Gagal fetch branch main dari origin"
-            FOUND=""
-            for c in $(git -C "$KSU_ROOT" rev-list -n 80 FETCH_HEAD); do
-              git -C "$KSU_ROOT" checkout -q -f "$c" || continue
-              if can_apply; then FOUND="$c"; break; fi
-            done
-            [ -n "$FOUND" ] || { cat "$DRY"; die "Tidak ada dari 80 commit main terbaru yang cocok dengan patch SUSFS@$SUSFS_HEAD. Isi ksu_ref dengan commit/tag tertentu."; }
-            echo "✅ Memakai commit main ${FOUND:0:8} yang cocok dengan patch"
-            echo "KSU_REF_USED=main@${FOUND:0:8} (otomatis)" >> "$GITHUB_ENV"
-          fi
-
-          can_apply || { cat "$DRY"; die "Patch SUSFS tidak cocok dengan $KSU_MANAGER (ref: ${KSU_REF:-${KSU_REF_USED:-?}}). Proses dibatalkan, tidak ada perubahan."; }
-          patch -d "$KSU_ROOT" -p1 --forward --batch --no-backup-if-mismatch < "$PATCH_FILE" >/dev/null \
-            || die "Patch SUSFS gagal saat diterapkan"
-          echo "✅ Patch SUSFS berhasil dipasang di $KSU_MANAGER (susfs4ksu@$SUSFS_HEAD)"
-          if grep -qi "fuzz" "$DRY"; then
-            echo "::warning::Patch SUSFS diterapkan dengan fuzz (konteks tidak persis). Periksa hasilnya:"
-            grep -i "fuzz\|offset" "$DRY"
-          fi
-
-          # ── 2) Ekstra patch manager (jika varian punya) ──
+          # ── 2) Ekstra patch manager, jika ada ──
           if [ -n "${EXTRA_PATCH_URL:-}" ]; then
             echo "⚙️ Ekstra patch ditemukan untuk varian $KSU_MANAGER."
             echo "Mengunduh dari: $EXTRA_PATCH_URL"
 
             EXTRA_PATCH_FILE="$TMPD/extra.patch"
             curl -fsSL --retry 3 -o "$EXTRA_PATCH_FILE" "$EXTRA_PATCH_URL" \
-              || die "Fatal Error: Gagal mengunduh ekstra patch dari URL tersebut!"
-            [ -s "$EXTRA_PATCH_FILE" ] || die "Fatal Error: Ekstra patch kosong!"
+              || die "Gagal mengunduh ekstra patch"
+            [ -s "$EXTRA_PATCH_FILE" ] || die "Ekstra patch kosong"
 
-            echo "Menerapkan ekstra patch ke $KSU_ROOT..."
-            if patch -d "$KSU_ROOT" -p1 -R --dry-run -s -f < "$EXTRA_PATCH_FILE" >/dev/null 2>&1; then
+            if patch -d "$KSU_ROOT" -p1 -R --dry-run -s -f \
+              < "$EXTRA_PATCH_FILE" >/dev/null 2>&1; then
               echo "✅ Ekstra patch sudah terpasang, dilewati."
-            elif patch -d "$KSU_ROOT" -p1 --forward --dry-run < "$EXTRA_PATCH_FILE" >"$TMPD/extra.log" 2>&1; then
-              patch -d "$KSU_ROOT" -p1 --forward --batch --no-backup-if-mismatch < "$EXTRA_PATCH_FILE" >/dev/null \
-                || die "Fatal Error: Ekstra patch gagal diterapkan pada $KSU_MANAGER (ref: ${KSU_REF_USED:-?})!"
+            elif patch -d "$KSU_ROOT" -p1 --forward --dry-run \
+              < "$EXTRA_PATCH_FILE" >"$TMPD/extra.log" 2>&1; then
+              patch -d "$KSU_ROOT" -p1 --forward --batch --no-backup-if-mismatch \
+                < "$EXTRA_PATCH_FILE" >/dev/null \
+                || die "Ekstra patch gagal diterapkan pada $KSU_MANAGER"
               echo "✅ Ekstra patch berhasil diterapkan."
             else
               cat "$TMPD/extra.log"
-              die "Fatal Error: Ekstra patch tidak cocok dengan $KSU_MANAGER (ref: ${KSU_REF_USED:-?})!"
+              die "Ekstra patch tidak cocok dengan $KSU_MANAGER"
             fi
           else
-            echo "✅ Tidak ada ekstra patch yang diperlukan untuk varian $KSU_MANAGER. Melanjutkan proses..."
+            echo "✅ Tidak ada ekstra patch untuk $KSU_MANAGER."
           fi
 
-          # Enable KernelSU in the defconfig
+          # ── 3) Aktifkan KernelSU di defconfig ──
           CONFIG_PATH="arch/arm64/configs/$DEFCONFIG_NAME"
-          if [ ! -f "$CONFIG_PATH" ]; then
-             die "Fatal Error: File Defconfig tidak ditemukan di $CONFIG_PATH. Periksa konfigurasi DEFCONFIG_NAME."
-          fi
+          [ -f "$CONFIG_PATH" ] \
+            || die "File defconfig tidak ditemukan: $CONFIG_PATH"
 
-          echo "Mengaktifkan CONFIG_KSU pada defconfig $DEFCONFIG_NAME..."
           scripts/config --file "$CONFIG_PATH" -e CONFIG_KSU
 
-          # KPM hanya untuk varian "SukiSU-Ultra+KPM"
           KPM_STATE=""
           if [ "$KSU_MANAGER" = "SukiSU-Ultra+KPM" ]; then
-            echo "Mengaktifkan CONFIG_KPM..."
             scripts/config --file "$CONFIG_PATH" -e CONFIG_KPM -e CONFIG_KALLSYMS_ALL
             KPM_STATE="aktif"
           else
-            echo "ℹ️ KPM dilewati (hanya untuk varian SukiSU-Ultra+KPM)."
+            echo "ℹ️ KPM dilewati (hanya untuk SukiSU-Ultra+KPM)."
           fi
 
           VER=$(git -C "$KSU_DIR" describe --tags --always 2>/dev/null || echo Unknown)
           echo "✅ $KSU_MANAGER setup selesai dengan versi: $VER"
 
-          # Detail KSU untuk ringkasan akhir (job "Package Kernels")
-          # Format: varian|manager|ref|versi|kpm|susfs|patch-ekstra
-          if [ "${SUSFS_SUPPORT:-false}" != "true" ]; then SUSFS_TXT="nonaktif"
-          elif [ "${NEED_SUSFS_PATCH:-0}" = "1" ]; then SUSFS_TXT="patch manual"
-          else SUSFS_TXT="bawaan"; fi
+          if [ "${SUSFS_SUPPORT:-false}" != "true" ]; then
+            SUSFS_TXT="nonaktif"
+          elif [ "${NEED_SUSFS_PATCH:-0}" = "1" ]; then
+            SUSFS_TXT="patch manual"
+          else
+            SUSFS_TXT="bawaan"
+          fi
+
           EXTRA_TXT="tidak ada"
-          [ -z "${EXTRA_PATCH_URL:-}" ] || EXTRA_TXT="$(basename "${EXTRA_PATCH_URL%%\?*}")"
+          [ -z "${EXTRA_PATCH_URL:-}" ] \
+            || EXTRA_TXT="$(basename "${EXTRA_PATCH_URL%%\?*}")"
+
           echo "${VARIANT_NAME}|${KSU_MANAGER}|${KSU_REF_USED:-?}|${VER}|${KPM_STATE}|${SUSFS_TXT}|${EXTRA_TXT}" \
             > "$WORK_DIR/ksu_info.txt"
         
