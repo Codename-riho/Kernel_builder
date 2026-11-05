@@ -1,0 +1,196 @@
+name: "Upstream Kernel Source"
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: "URL repo upstream (contoh: https://android.googlesource.com/kernel/common)"
+        required: false
+        type: string
+        default: "https://android.googlesource.com/kernel/common"
+      source_branch:
+        description: "Branch upstream (contoh: android13-5.15-lts)"
+        required: false
+        type: string
+        default: "android13-5.15-lts"
+      target_branch:
+        description: "Branch target di repo ini"
+        required: false
+        type: string
+        default: "android13-5.15-lts"
+      sync_mode:
+        description: "merge = gabung upstream, riwayat & commit kustom Anda tetap | mirror = samakan persis dengan upstream (force push, riwayat upstream) | fresh = snapshot 1 commit (riwayat dibuang)"
+        required: true
+        type: choice
+        default: "merge"
+        options:
+          - "merge"
+          - "mirror"
+          - "fresh"
+      conflict_strategy:
+        description: "Khusus mode merge bila ada konflik: abort = berhenti | ours = menangkan kode Anda | theirs = menangkan upstream"
+        required: true
+        type: choice
+        default: "abort"
+        options:
+          - "abort"
+          - "ours"
+          - "theirs"
+  # Aktifkan bila ingin sinkron otomatis (memakai nilai default di atas):
+  # schedule:
+  #   - cron: "0 19 * * 5"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: upstream-${{ github.repository }}-${{ inputs.target_branch || 'android13-5.15-lts' }}
+  cancel-in-progress: false
+
+jobs:
+  upstream:
+    name: "🔄 Upstream Kernel Source"
+    runs-on: ubuntu-26.04
+    timeout-minutes: 180
+    env:
+      SOURCE_REPO: ${{ inputs.source_repo || 'https://android.googlesource.com/kernel/common' }}
+      SOURCE_BRANCH: ${{ inputs.source_branch || 'android13-5.15-lts' }}
+      TARGET_REPO: ${{ github.repository }}
+      TARGET_BRANCH: ${{ inputs.target_branch || 'android13-5.15-lts' }}
+      SYNC_MODE: ${{ inputs.sync_mode || 'merge' }}
+      CONFLICT_STRATEGY: ${{ inputs.conflict_strategy || 'abort' }}
+      PUSH_TOKEN: ${{ github.token }}
+    steps:
+      - name: "🧹 Bebaskan ruang disk (untuk kernel besar)"
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+          sudo docker image prune --all --force
+
+      - name: 🚧 Setup SWAP 16GB
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 16
+
+      - name: 🔥 Tune Swap
+        run: |
+          echo "vm.swappiness=85" | sudo tee -a /etc/sysctl.conf
+          sudo sysctl -p
+
+      - name: "🔄 Sinkronisasi upstream (${{ inputs.sync_mode || 'merge' }})"
+        run: |
+          set -euo pipefail
+          die() { echo "::error::$*"; exit 1; }
+
+          # Optimasi koneksi Git untuk mencegah timeout
+          git config --global user.name  "github-actions"
+          git config --global user.email "actions@github.com"
+          git config --global http.version HTTP/1.1
+          git config --global http.postBuffer 2147483648
+          git config --global http.lowSpeedLimit 1000
+          git config --global http.lowSpeedTime 600
+
+          git check-ref-format --branch "$SOURCE_BRANCH" >/dev/null || die "Nama branch upstream tidak valid: $SOURCE_BRANCH"
+          git check-ref-format --branch "$TARGET_BRANCH" >/dev/null || die "Nama branch target tidak valid: $TARGET_BRANCH"
+
+          # owner/repo -> URL GitHub bertoken; path absolut dipakai apa adanya
+          case "$TARGET_REPO" in
+            /*) TARGET_URL="$TARGET_REPO" ;;
+            */*) TARGET_URL="https://x-access-token:${PUSH_TOKEN}@github.com/${TARGET_REPO}.git" ;;
+            *) die "target_repo harus berformat username/repo: $TARGET_REPO" ;;
+          esac
+
+          OLD="-"; NEW="-"; NOTE=""
+
+          case "$SYNC_MODE" in
+            merge)
+              git ls-remote --exit-code --heads "$TARGET_URL" "$TARGET_BRANCH" >/dev/null 2>&1 \
+                || die "Branch '$TARGET_BRANCH' belum ada di $TARGET_REPO. Jalankan mode 'mirror' sekali untuk membuatnya."
+
+              echo "::group::📥 Clone target & fetch upstream"
+              git clone --no-tags --single-branch --branch "$TARGET_BRANCH" "$TARGET_URL" work
+              cd work
+              git remote add upstream "$SOURCE_REPO"
+              git fetch --no-tags upstream "+refs/heads/${SOURCE_BRANCH}:refs/remotes/upstream/${SOURCE_BRANCH}"
+              echo "::endgroup::"
+
+              OLD=$(git rev-parse HEAD)
+              UP=$(git rev-parse "refs/remotes/upstream/${SOURCE_BRANCH}")
+
+              if git merge-base --is-ancestor "$UP" HEAD; then
+                NEW="$OLD"; NOTE="Sudah up-to-date dengan upstream, tidak ada yang digabung."
+                echo "✅ $NOTE"
+              else
+                git merge-base HEAD "$UP" >/dev/null 2>&1 \
+                  || die "Riwayat target dan upstream tidak berkaitan (repo dibuat dengan mode 'fresh'?). Pakai mode 'mirror' atau 'fresh'."
+
+                ARGS=(--no-edit -m "Merge upstream ${SOURCE_BRANCH} (${UP:0:12}) dari ${SOURCE_REPO}")
+                case "$CONFLICT_STRATEGY" in
+                  ours)   ARGS+=(-X ours) ;;
+                  theirs) ARGS+=(-X theirs) ;;
+                esac
+
+                echo "::group::🔀 Merge upstream"
+                if ! git merge "${ARGS[@]}" "$UP"; then
+                  echo "::endgroup::"
+                  echo "::group::⚠️ File konflik"
+                  git diff --name-only --diff-filter=U
+                  echo "::endgroup::"
+                  git merge --abort || true
+                  die "Merge konflik. Ulangi dengan conflict_strategy 'ours' atau 'theirs', atau selesaikan manual."
+                fi
+                echo "::endgroup::"
+
+                NEW=$(git rev-parse HEAD)
+                NOTE="$(git rev-list --count "$OLD..$NEW") commit baru digabung dari upstream."
+                echo "::group::🚀 Push (tanpa force)"
+                git push "$TARGET_URL" "HEAD:refs/heads/${TARGET_BRANCH}"
+                echo "::endgroup::"
+              fi
+              ;;
+
+            mirror)
+              echo "::group::📥 Clone upstream"
+              git clone --depth=1 --no-tags --single-branch --branch "$SOURCE_BRANCH" "$SOURCE_REPO" work
+              cd work
+              echo "::endgroup::"
+              NEW=$(git rev-parse HEAD)
+              echo "::group::🚀 Push paksa (samakan dengan upstream)"
+              git push --force "$TARGET_URL" "HEAD:refs/heads/${TARGET_BRANCH}"
+              echo "::endgroup::"
+              NOTE="Branch target disamakan persis dengan upstream (force push)."
+              ;;
+
+            fresh)
+              echo "::group::📥 Clone upstream"
+              git clone --depth=1 --no-tags --single-branch --branch "$SOURCE_BRANCH" "$SOURCE_REPO" work
+              cd work
+              echo "::endgroup::"
+              SRC=$(git rev-parse --short=12 HEAD)
+              rm -rf .git
+              git init -q
+              git checkout -q -b "$TARGET_BRANCH"
+              git add -A
+              git commit -q -m "Sync: snapshot ${SOURCE_BRANCH}@${SRC} dari ${SOURCE_REPO}"
+              NEW=$(git rev-parse HEAD)
+              echo "::group::🚀 Push paksa (riwayat baru)"
+              git push --force "$TARGET_URL" "HEAD:refs/heads/${TARGET_BRANCH}"
+              echo "::endgroup::"
+              NOTE="Snapshot 1 commit dari upstream@${SRC} (riwayat lama diganti)."
+              ;;
+
+            *) die "sync_mode tidak dikenal: $SYNC_MODE" ;;
+          esac
+
+          {
+            echo "### 🔄 Upstream Kernel Source"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Mode | \`$SYNC_MODE\` |"
+            echo "| Upstream | \`$SOURCE_REPO\` @ \`$SOURCE_BRANCH\` |"
+            echo "| Target | \`$TARGET_REPO\` @ \`$TARGET_BRANCH\` |"
+            echo "| Sebelum | \`${OLD:0:12}\` |"
+            echo "| Sesudah | \`${NEW:0:12}\` |"
+            echo ""
+            echo "$NOTE"
+          } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
