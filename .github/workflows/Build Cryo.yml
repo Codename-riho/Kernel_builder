@@ -543,7 +543,7 @@ jobs:
             -d CONFIG_ZRAM_DEF_COMP_842 \
             -d CONFIG_KERNEL_BZIP2 \
             -d CONFIG_KERNEL_UNCOMPRESSED \
-            -d CONFIG_KPROFILES 
+            -e CONFIG_KPROFILES 
           
           # Remove duplicate lines safely
           sed -i '/ZRAM_DEF_COMP_LZO/d' "$CONFIG_FILE" || true
@@ -607,6 +607,47 @@ jobs:
             echo "::error::masih ada penanda konflik di net/ atau include/"; exit 1
           fi
           echo "✅ BBRv3 + PLB terpasang"
+
+      - name: "💉 Inject Kprofiles Support"
+        working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
+        env:
+          KP_MODE: "0" # 0 = Default/Disabled ,1 = Battery saver ,2 = Balance ,3 = Performance 
+        run: |
+          set -euo pipefail
+          
+          echo "📦 Mengunduh Kprofiles..."
+          rm -rf drivers/misc/kprofiles
+          for i in 1 2 3; do
+            git clone --depth=1 https://github.com/dakkshesh07/Kprofiles.git drivers/misc/kprofiles
+            echo "⚠️ Clone gagal ($i/3)"; rm -rf drivers/misc/kprofiles; sleep $((i*10))
+            [ "$i" = 3 ] && { echo "::error::Gagal clone Kprofiles"; exit 1; }
+          done
+          rm -rf drivers/misc/kprofiles/.git
+
+          echo "🔧 Menyambungkan ke Kconfig..."
+          if ! grep -q 'drivers/misc/kprofiles/Kconfig' drivers/misc/Kconfig; then
+            sed -i '/^menu "Misc devices"/a source "drivers/misc/kprofiles/Kconfig"' drivers/misc/Kconfig
+          fi
+          grep -q 'drivers/misc/kprofiles/Kconfig' drivers/misc/Kconfig \
+            || { echo "::error::Kconfig gagal disambungkan"; exit 1; }
+
+          echo "🔧 Menyambungkan ke Makefile..."
+          if ! grep -qF 'CONFIG_KPROFILES' drivers/misc/Makefile; then
+            echo 'obj-$(CONFIG_KPROFILES) += kprofiles/' >> drivers/misc/Makefile
+          fi
+
+          echo "🔥 Mengaktifkan Kprofiles di defconfig..."
+          CFG="arch/arm64/configs/${{ env.DEFCONFIG_NAME }}"
+          [ -f "$CFG" ] || { echo "::error::$CFG tidak ditemukan"; exit 1; }
+          
+          sed -i '/^CONFIG_KPROFILES\b/d;/^# CONFIG_KPROFILES is not set/d;/^CONFIG_KP_DEFAULT_MODE/d' "$CFG"
+          {
+            echo "CONFIG_KPROFILES=y"
+            echo "CONFIG_KP_DEFAULT_MODE=${KP_MODE}"
+            echo "CONFIG_AUTO_KPROFILES_NONE=y"
+          } >> "$CFG"
+
+          echo "✅ Kprofiles aktif, default mode = ${KP_MODE}"
                          
       - name: "🏜️📦 Add Droidspaces Support (kABI patch + GKI defconfig)"
         if: ${{ env.DROIDSPACES_SUPPORT == 'true' }}
@@ -1586,25 +1627,6 @@ jobs:
                 }'
             fi
 
-            # ── 3. Deep Sleep (hanya jika dipasang) ───────────────────────────
-            if [ -n "$DS_INFOS" ]; then
-              echo
-              echo "### 💤 Deep Sleep (built-in)"
-              # shellcheck disable=SC2086
-              cat $DS_INFOS | awk -F'|' '
-                { key=$2 "|" $3 "|" $4 "|" $5
-                  if (!(key in vars)) order[++n]=key
-                  vars[key]=vars[key] (vars[key]==""?"":", ") $1 }
-                END {
-                  print "| Varian | vm.stat_interval | vm.dirty_writeback_centisecs | Penegas runtime |"
-                  print "|---|---|---|---|"
-                  for (i=1;i<=n;i++) { split(order[i], p, "|")
-                    rt = (p[3]+0 > 0) ? p[3] " pass, mulai +" p[4] "s, jeda berlipat ganda" : "—"
-                    printf "| %s | %s | %s | %s |\n", vars[order[i]], p[1], p[2], rt }
-                }'
-              echo
-              echo 'Verifikasi di perangkat: `dmesg | grep cryo_deepsleep`'
-            fi
           } >> "$GITHUB_STEP_SUMMARY"
       
       - name: "📦 Create release package"
@@ -1654,11 +1676,11 @@ jobs:
           |                                                     |
           |  * CRYO AUTHORITY ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ |
           |   • Full LTO                                        |
-          |   • Extra TCP Congestion                            |
-          |   • Homemade, stock-like feel                       |
+          |   • Extra TCP Congestion With BBR v3 Support        |
+          |   • Seasoned Stock Kernel                           |
           |                                                     |
           |  * E.T.I.R (TOOLCHAIN) ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~|
-          |   • Cirrus clang 24.0.0 / Clang r547379             |
+          |   • Custom Clang  / AOSP Clang r614150              |
           |                                                     |
           |  * YOUR AUTHORITY (ROOT & SECURITY) ~~~~~~~~~~~~~~~ |
           |   • Vanilla & BakaSU (Multi Manager Support)        |
@@ -1668,6 +1690,7 @@ jobs:
           |                                                     |
           |  * SNOWBOUND EXTRAS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ |
           |   • Droidspaces Support with the note activated     |
+          |   • Kprofiles Support                               |
           |                                                     |
           +--------------------- * - + - * ---------------------+
           |                                                     |
@@ -1716,7 +1739,6 @@ jobs:
           TOOLCHAIN_TYPE: ${{ inputs.toolchain_type || 'android-tools' }}
           CUSTOM_CLANG_REPO: ${{ inputs.customClangRepo }}
           DEVICE_NAME: "Redmi Note 12 4G"
-          SPOOF_INPUT: ${{ github.event.inputs.kernelSpoofVersion }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -uo pipefail
