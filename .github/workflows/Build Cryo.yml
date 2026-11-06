@@ -545,8 +545,8 @@ jobs:
             -d CONFIG_ZRAM_DEF_COMP_842 \
             -d CONFIG_KERNEL_BZIP2 \
             -d CONFIG_KERNEL_UNCOMPRESSED \
-            -d DEBUG_INFO_BTF \
-            -d DEBUG_INFO_BTF_MODULES \
+            -e CONFIG_NO_HZ_IDLE \
+            -e CONFIG_HZ_250 \
             -e CONFIG_KPROFILES 
           
           # Remove duplicate lines safely
