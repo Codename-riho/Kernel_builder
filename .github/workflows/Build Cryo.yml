@@ -10,6 +10,7 @@ env:
 
 permissions:
   contents: write
+  actions: read
 
 on:
   schedule:
@@ -1882,15 +1883,33 @@ jobs:
 
           🔗 <a href=\"${RUN_URL}\">Unduh dari Artifacts (halaman run)</a>"
           else
-            # ───── GAGAL ─────
+            
+          # ───── GAGAL ─────
             FAILED=""
-            while IFS=$'\t' read -r job step; do
-              if [ -n "$job" ]; then
+            JOBS_JSON=$(curl -fsSL --retry 3 \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                "${GITHUB_API_URL:-https://api.github.com}/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100") \
+              || echo "::warning::Gagal membaca daftar job dari API (cek permission actions: read)"
+
+            # Job/step yang gagal. Job yang sedang berjalan (Package Kernels, tempat step ini berada)
+            # belum punya conclusion, jadi step-nya dicek langsung.
+            if [ -n "${JOBS_JSON:-}" ]; then
+              while IFS=$'\t' read -r job step; do
+                [ -n "$job" ] || continue
                 FAILED+="• <b>$(printf '%s' "$job" | esc)</b> → <code>$(printf '%s' "$step" | esc)</code>"$'\n'
-              fi
-            done < <(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
-                       --jq '.jobs[] | select(.conclusion=="failure" or ([.steps[]? | select(.conclusion=="failure")] | length > 0)) | [.name, (([.steps[]? | select(.conclusion=="failure")][0].name) // "-")] | @tsv' 2>/dev/null)
-            if [ -z "$FAILED" ]; then FAILED="• (detail tidak tersedia)"$'\n'; fi
+              done < <(printf '%s' "$JOBS_JSON" | jq -r '
+                .jobs[]
+                | ([.steps[]? | select(.conclusion=="failure" or .conclusion=="timed_out")][0].name) as $s
+                | select(.conclusion=="failure" or .conclusion=="timed_out" or $s != null)
+                | [.name, ($s // "(step tidak terbaca, lihat log)")] | @tsv' 2>/dev/null)
+            fi
+
+            # Cadangan bila API tidak memberi hasil: pakai status yang sudah diketahui workflow
+            if [ -z "$FAILED" ]; then
+              [ "$BUILD_RESULT" = "success" ] || FAILED+="• <b>Build Kernels</b> → <code>lihat artifact error-logs-*</code>"$'\n'
+              [ "$JOB_STATUS"  = "success" ] || FAILED+="• <b>Package Kernels</b> → <code>lihat log job ini</code>"$'\n'
+            fi
 
             MSG="❌ <b>Kernel Build Failed</b>
 
@@ -1913,5 +1932,4 @@ jobs:
 
           tg_send "$MSG"
           exit 0
-      
           
