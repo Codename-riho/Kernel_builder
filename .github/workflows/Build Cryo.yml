@@ -611,6 +611,28 @@ jobs:
             echo "::error::masih ada penanda konflik di net/ atau include/"; exit 1
           fi
           echo "✅ BBRv3 + PLB terpasang"
+
+      - name: "💉 Set Kprofiles default mode"
+        working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
+        env:
+          KP_MODE: "0" # 0 = Default/Disabled, 1 = Battery saver, 2 = Balance, 3 = Performance
+        run: |
+          set -euo pipefail
+
+          CFG="arch/arm64/configs/${{ env.DEFCONFIG_NAME }}"
+          [ -f "$CFG" ] || { echo "::error::$CFG tidak ditemukan"; exit 1; }
+
+          # Kprofiles bawaan kernel harus sudah ada (tidak diganti dengan repo luar)
+          grep -rqs 'config KP_DEFAULT_MODE' drivers/misc/kprofiles/Kconfig drivers/misc/Kconfig \
+            || { echo "::error::Kprofiles tidak ada di source kernel ini"; exit 1; }
+
+          sed -i '/^CONFIG_KP_DEFAULT_MODE/d' "$CFG"
+          scripts/config --file "$CFG" -e CONFIG_KPROFILES --set-val CONFIG_KP_DEFAULT_MODE "${KP_MODE}"
+
+          grep -q "^CONFIG_KP_DEFAULT_MODE=${KP_MODE}\$" "$CFG" \
+            || { echo "::error::Gagal set KP_DEFAULT_MODE"; exit 1; }
+
+          echo "✅ Kprofiles default mode = ${KP_MODE}"
                         
       - name: "🏜️📦 Add Droidspaces Support (kABI patch + GKI defconfig)"
         if: ${{ env.DROIDSPACES_SUPPORT == 'true' }}
