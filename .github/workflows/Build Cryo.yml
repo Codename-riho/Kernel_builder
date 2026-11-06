@@ -1765,7 +1765,7 @@ jobs:
           EOF
           
           # Create ZIP
-          ZIP_NAME="CryoKernel_AK3$(TZ=Asia/Jakarta date +'%Y-%m-%d').zip"
+          ZIP_NAME="CryoKernel_AK3-$(TZ=Asia/Jakarta date +'%Y-%m-%d').zip"
           cd AnyKernel3
           zip -r9 "../$ZIP_NAME" * -x .git/*
           cd ..
@@ -1858,7 +1858,7 @@ jobs:
           if [ "$BUILD_RESULT" = "success" ] && [ "$JOB_STATUS" = "success" ]; then
             # ───── SUKSES ─────
             IMAGES=$(cd AnyKernel3 && ls Image.* 2>/dev/null | sed 's/^Image\.//' | paste -sd, - | sed 's/,/, /g')
-            DATE="${ZIP_NAME#CryoKernel_}"; DATE="${DATE%.zip}"
+            DATE=$(TZ=Asia/Jakarta date +'%Y-%m-%d')
 
             MSG="✅ <b>Kernel Build Successful</b>
 
