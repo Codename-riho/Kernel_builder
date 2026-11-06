@@ -1847,8 +1847,8 @@ jobs:
           • Device: <code>${DEVICE_NAME}</code>
 
           <b>👾 Configuration:</b>
-          • LTO: <code>full</code>
-          • Tick Rate: <code>250 HZ<code>
+          • LTO: <code>Full</code>
+          • Tick Rate: <code>250 HZ</code>
           • Images: <code>${IMAGES}</code>
           • KSU Manager: <code>${MANAGER}</code>
           • SUSFS: <code>${SUSFS_TEXT}</code>
