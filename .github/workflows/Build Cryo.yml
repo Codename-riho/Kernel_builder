@@ -556,6 +556,10 @@ jobs:
             echo "ඞ SUSFS_SUPPORT=${SUSFS_SUPPORT}"
             echo "⚔️ KSU_MANAGER=${KSU_MANAGER}"
 
+          #cari akar permasalahan btf unresolved symbols
+          pahole --version
+          grep -E 'DEBUG_INFO_BTF|DEBUG_INFO_DWARF' out/.config
+
       - name: "🚄 Porting BBRv3 + PLB (cherry-pick)"
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
