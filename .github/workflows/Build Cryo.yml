@@ -1869,7 +1869,7 @@ jobs:
 
           <b>👾 Configuration:</b>
           • LTO: <code>Full</code>
-          • Tick Rate: <code>250 HZ</code>
+          • Tick Rate: <code>250 Hz</code>
           • Images: <code>${IMAGES}</code>
           • KSU Manager: <code>${MANAGER}</code>
           • SUSFS: <code>${SUSFS_TEXT}</code>
