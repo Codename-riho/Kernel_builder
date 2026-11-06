@@ -611,48 +611,7 @@ jobs:
             echo "::error::masih ada penanda konflik di net/ atau include/"; exit 1
           fi
           echo "✅ BBRv3 + PLB terpasang"
-
-      - name: "💉 Inject Kprofiles Support"
-        working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
-        env:
-          KP_MODE: "0" # 0 = Default/Disabled ,1 = Battery saver ,2 = Balance ,3 = Performance 
-        run: |
-          set -euo pipefail
-          
-          echo "📦 Mengunduh Kprofiles..."
-          rm -rf drivers/misc/kprofiles
-          for i in 1 2 3; do
-            git clone --depth=1 https://github.com/dakkshesh07/Kprofiles.git drivers/misc/kprofiles && break
-            echo "⚠️ Clone gagal ($i/3)"; rm -rf drivers/misc/kprofiles; sleep $((i*10))
-            [ "$i" = 3 ] && { echo "::error::Gagal clone Kprofiles"; exit 1; }
-          done
-          rm -rf drivers/misc/kprofiles/.git
-
-          echo "🔧 Menyambungkan ke Kconfig..."
-          if ! grep -q 'drivers/misc/kprofiles/Kconfig' drivers/misc/Kconfig; then
-            sed -i '/^menu "Misc devices"/a source "drivers/misc/kprofiles/Kconfig"' drivers/misc/Kconfig
-          fi
-          grep -q 'drivers/misc/kprofiles/Kconfig' drivers/misc/Kconfig \
-            || { echo "::error::Kconfig gagal disambungkan"; exit 1; }
-
-          echo "🔧 Menyambungkan ke Makefile..."
-          if ! grep -qF 'CONFIG_KPROFILES' drivers/misc/Makefile; then
-            echo 'obj-$(CONFIG_KPROFILES) += kprofiles/' >> drivers/misc/Makefile
-          fi
-
-          echo "🔥 Mengaktifkan Kprofiles di defconfig..."
-          CFG="arch/arm64/configs/${{ env.DEFCONFIG_NAME }}"
-          [ -f "$CFG" ] || { echo "::error::$CFG tidak ditemukan"; exit 1; }
-          
-          sed -i '/^CONFIG_KPROFILES\b/d;/^# CONFIG_KPROFILES is not set/d;/^CONFIG_KP_DEFAULT_MODE/d' "$CFG"
-          {
-            echo "CONFIG_KPROFILES=y"
-            echo "CONFIG_KP_DEFAULT_MODE=${KP_MODE}"
-            echo "CONFIG_AUTO_KPROFILES_NONE=y"
-          } >> "$CFG"
-
-          echo "✅ Kprofiles aktif, default mode = ${KP_MODE}"
-                         
+                        
       - name: "🏜️📦 Add Droidspaces Support (kABI patch + GKI defconfig)"
         if: ${{ env.DROIDSPACES_SUPPORT == 'true' }}
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
@@ -764,14 +723,54 @@ jobs:
 
           # Konfigurasi per manager
           case "$KSU_MANAGER" in
-            BakaSU)                 REPO="Baka-SU/BakaSU";              SETUP_BRANCH=main;        DEFAULT_REF=main;            NEED_SUSFS_PATCH=0 ;;
-            SukiSU-Ultra+KPM)       REPO="SukiSU-Ultra/SukiSU-Ultra";   SETUP_BRANCH=main;        DEFAULT_REF=builtin;         NEED_SUSFS_PATCH=0 ;;
-            SukiSU-Ultra-susfs)     REPO="SukiSU-Ultra/SukiSU-Ultra";   SETUP_BRANCH=main;        DEFAULT_REF=susfs_new;       NEED_SUSFS_PATCH=0 ;;
-            KernelSU-Next-pershoot) REPO="pershoot/KernelSU-Next";      SETUP_BRANCH=dev-susfs;   DEFAULT_REF=dev-susfs;       NEED_SUSFS_PATCH=0; EXTRA_PATCH_URL="$MULTI_MANAGER_PATCH" ;;
-            KernelSU-Official)      REPO="tiann/KernelSU";              SETUP_BRANCH=main;        DEFAULT_REF=main;            NEED_SUSFS_PATCH=1; EXTRA_PATCH_URL="$MULTI_MANAGER_PATCH" ;;
-            BakaSU-susfs)           REPO="Baka-SU/BakaSU";              SETUP_BRANCH=sync-up;     DEFAULT_REF=sync-up;         NEED_SUSFS_PATCH=0 ;;
-            KernelSU-Next-pershoot_selinux-hide) REPO="pershoot/KernelSU-Next";      SETUP_BRANCH=dev-susfs-selinux_hide;   DEFAULT_REF=dev-susfs-selinux_hide;       NEED_SUSFS_PATCH=0; EXTRA_PATCH_URL="$MULTI_MANAGER_PATCH" ;;
-            *) die "Fatal Error: Varian manager tidak dikenal: $KSU_MANAGER" ;;
+            BakaSU)
+              REPO="Baka-SU/BakaSU"
+              SETUP_BRANCH=main
+              DEFAULT_REF=main
+              NEED_SUSFS_PATCH=0
+              ;;
+            BakaSU-susfs)
+              REPO="Baka-SU/BakaSU"
+              SETUP_BRANCH=sync-up
+              DEFAULT_REF=sync-up
+              NEED_SUSFS_PATCH=0
+              ;;
+            SukiSU-Ultra+KPM)
+              REPO="SukiSU-Ultra/SukiSU-Ultra"
+              SETUP_BRANCH=main
+              DEFAULT_REF=builtin
+              NEED_SUSFS_PATCH=0
+              ;;
+            SukiSU-Ultra-susfs)
+              REPO="SukiSU-Ultra/SukiSU-Ultra"
+              SETUP_BRANCH=main
+              DEFAULT_REF=susfs_new
+              NEED_SUSFS_PATCH=0
+              ;;
+            KernelSU-Next-pershoot)
+              REPO="pershoot/KernelSU-Next"
+              SETUP_BRANCH=dev-susfs
+              DEFAULT_REF=dev-susfs
+              NEED_SUSFS_PATCH=0
+              EXTRA_PATCH_URL="$MULTI_MANAGER_PATCH"
+              ;;
+            KernelSU-Next-pershoot_selinux-hide)
+              REPO="pershoot/KernelSU-Next"
+              SETUP_BRANCH=dev-susfs-selinux_hide
+              DEFAULT_REF=dev-susfs-selinux_hide
+              NEED_SUSFS_PATCH=0
+              EXTRA_PATCH_URL="$MULTI_MANAGER_PATCH"
+              ;;
+            KernelSU-Official)
+              REPO="tiann/KernelSU"
+              SETUP_BRANCH=main
+              DEFAULT_REF=main
+              NEED_SUSFS_PATCH=1
+              EXTRA_PATCH_URL="$MULTI_MANAGER_PATCH"
+              ;;
+            *)
+              die "Fatal Error: Varian manager tidak dikenal: $KSU_MANAGER"
+              ;;
           esac
 
           NEED_SUSFS_ORIG=$NEED_SUSFS_PATCH   # kebutuhan asli manager, sebelum input SUSFS menimpanya
