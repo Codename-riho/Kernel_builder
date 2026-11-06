@@ -1340,6 +1340,40 @@ jobs:
 
           # Bukti hasil akhir
           grep -nE "LINUX_COMPILE_(BY|HOST)" "$F"
+
+      - name: "⚖️ Set CPU Governor to Enhance walt"
+        working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
+        run: |
+          set -euo pipefail
+          die() { echo "::error::$*"; exit 1; }
+
+          CONFIG_PATH="arch/arm64/configs/${DEFCONFIG_NAME}"
+          [ -f "$CONFIG_PATH" ] || die "Defconfig tidak ditemukan: $CONFIG_PATH"
+
+          # Cek apakah simbol ada di Kconfig tree ini (hindari baris sampah "is not set")
+          has_sym() {
+            grep -rqsE "^config ${1#CONFIG_}\$" --include='Kconfig*' drivers/cpufreq init kernel/sched
+          }
+
+          echo "⚙️ Mengatur CPU Governor default ke 'schedutil'..."
+
+          # 1. Build walt + uclamp (dipakai Android untuk boost app aktif)
+          scripts/config --file "$CONFIG_PATH" \
+            -e CONFIG_CPU_FREQ_GOV_WALT \
+            -d CONFIG_CPU_FREQ_GOV_SCHEDUTIL \
+            -e CONFIG_UCLAMP_TASK \
+            -e CONFIG_UCLAMP_TASK_GROUP
+
+          # 2. Matikan default governor lain (hanya yang memang ada di tree ini)
+          for g in PERFORMANCE POWERSAVE USERSPACE ONDEMAND CONSERVATIVE INTERACTIVE SCHEDUTIL; do
+            if has_sym "CONFIG_CPU_FREQ_DEFAULT_GOV_${g}"; then
+              scripts/config --file "$CONFIG_PATH" -d "CONFIG_CPU_FREQ_DEFAULT_GOV_${g}"
+            fi
+          done
+
+          # 3. Jadikan walt sebagai governor default
+          scripts/config --file "$CONFIG_PATH" -e CONFIG_CPU_FREQ_DEFAULT_GOV_WALT
+          
           
       - name: "🛡️ Guard VINTF"
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
