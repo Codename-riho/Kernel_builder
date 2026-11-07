@@ -212,14 +212,7 @@ jobs:
         run: |
             echo "vm.swappiness=90" | sudo tee -a /etc/sysctl.conf
             sudo sysctl -p
-
-      - name: "⚡ Setup ccache"
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          key: kernel-${{ env.DEFCONFIG_NAME }}
-          max-size: 2G
-          restore-keys: kernel-
-            
+        
       - name: "🎭 Clone kernel source"
         working-directory: ./${{ env.KERNEL_LOC_DIR }}
         run: |
