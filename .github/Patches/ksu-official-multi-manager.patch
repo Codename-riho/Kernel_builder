@@ -1,0 +1,196 @@
+diff --git a/kernel/Kbuild b/kernel/Kbuild
+--- a/kernel/Kbuild
++++ b/kernel/Kbuild
+@@ -176,15 +176,19 @@ KSU_PACKAGE_NAME ?= me.weishu.kernelsu.pr
+ endif
+ KSU_EXPECTED_SIZE ?= 0x033b
+ KSU_EXPECTED_HASH ?= c371061b19d8c7d7d6133c6a9bafe198fa944e50c1b31c9d8daa8d7f1fc2d2d6
++# Multi manager: <size>:<sha256>,... (any app whose signature matches is accepted)
++KSU_MANAGER_LIST ?= 0x3e6:79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7,0x338:f26471a28031130362bce7eebffb9a0b8afc3095f163ce0c75a309f03b644a1f,0x375:484fcba6e6c43b1fb09700633bf2fb4758f13cb0b2f4457b80d075084b26c588,0x384:a9462b8b98ea1ca7901b0cbdcebfaa35f0aa95e51b01d66e6b6d2c81b97746d8,0x2e8:13c415105fad7b798e5584798d82ea334729f0c24de7b9d4cd2f2e1b062eb566,0x317:4d3c9a3f40b4acab5d89d74eb5f2edf92a6af71a366b9484de507220739d025b,0x381:52d52d8c8bfbe53dc2b6ff1c613184e2c03013e090fe8905d8e3d5dc2658c2e4,0x396:f415f4ed9435427e1fdf7f1fccd4dbc07b3d6b8751e4dbcec6f19671f427870b,0x033b:c371061b19d8c7d7d6133c6a9bafe198fa944e50c1b31c9d8daa8d7f1fc2d2d6,0x384:7e0c6d7278a3bb8e364e0fcba95afaf3666cf5ff3c245a3b63c8833bd0445cc4,0x35c:947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef,0x377:d3469712b6214462764a1d8d3e5cbe1d6819a0b629791b9f4101867821f1df64,0x180:7e0c6d7278a3bb8e364e0fcba95afaf3666cf5ff3c245a3b63c8833bd0445cc4
+ 
+ $(info -- KernelSU Manager package name: $(KSU_PACKAGE_NAME))
+ $(info -- KernelSU Manager signature size: $(KSU_EXPECTED_SIZE))
+ $(info -- KernelSU Manager signature hash: $(KSU_EXPECTED_HASH))
++$(info -- KernelSU Manager signature list: $(KSU_MANAGER_LIST))
+ $(info -- KernelSU is PR Build: $(KSU_IS_PR_BUILD))
+ 
+ ccflags-y += -DKSU_PACKAGE_NAME=\"$(KSU_PACKAGE_NAME)\"
+ ccflags-y += -DEXPECTED_SIZE=$(KSU_EXPECTED_SIZE)
+ ccflags-y += -DEXPECTED_HASH=\"$(KSU_EXPECTED_HASH)\"
++ccflags-y += -DKSU_MANAGER_LIST=\"$(KSU_MANAGER_LIST)\"
+ ccflags-y += -DKSU_IS_PR_BUILD=$(KSU_IS_PR_BUILD)
+ 
+ ccflags-y += -DKSU_NEW_DCACHE_FLUSH=$(KSU_NEW_DCACHE_FLUSH)
+diff --git a/kernel/manager/apk_sign.c b/kernel/manager/apk_sign.c
+--- a/kernel/manager/apk_sign.c
++++ b/kernel/manager/apk_sign.c
+@@ -325,5 +325,26 @@ int get_pkg_from_apk_dir_path(char *pkg, const char *path)
+ 
+ bool is_manager_apk(char *path)
+ {
+-    return check_v2_signature(path, EXPECTED_SIZE, EXPECTED_HASH);
++    const char *p = KSU_MANAGER_LIST;
++
++    if (check_v2_signature(path, EXPECTED_SIZE, EXPECTED_HASH))
++        return true;
++
++    // KSU_MANAGER_LIST is "<hex size>:<sha256>,<hex size>:<sha256>,..."
++    while (*p) {
++        unsigned int size;
++        char hash[65] = { 0 };
++
++        if (sscanf(p, "%x:%64[^,]", &size, hash) == 2 && check_v2_signature(path, size, hash)) {
++            pr_info("matched manager APK: %s (size=0x%x)\n", path, size);
++            return true;
++        }
++
++        p = strchr(p, ',');
++        if (!p)
++            break;
++        p++; // skip comma
++    }
++
++    return false;
+ }
+diff --git a/kernel/manager/throne_tracker.c b/kernel/manager/throne_tracker.c
+--- a/kernel/manager/throne_tracker.c
++++ b/kernel/manager/throne_tracker.c
+@@ -23,6 +23,7 @@ uid_t ksu_manager_appid = KSU_INVALID_APPID;
+ #define DATA_PATH_LEN 384 // 384 is enough for /data/app/<package>/base.apk
+ 
+ static char cached_manager_apk_path[DATA_PATH_LEN];
++static char cached_manager_pkg[KSU_MAX_PACKAGE_NAME];
+ 
+ #define SYSTEM_PACKAGES_LIST_PATH "/data/system/packages.list"
+ 
+@@ -32,18 +33,21 @@ struct uid_data {
+     char package[KSU_MAX_PACKAGE_NAME];
+ };
+ 
+-static void crown_manager(const char *apk, struct list_head *uid_data)
++static bool crown_manager(const char *apk, const char *pkg, struct list_head *uid_data)
+ {
+     struct list_head *list = (struct list_head *)uid_data;
+     struct uid_data *np;
+ 
+     list_for_each_entry (np, list, list) {
+-        if (strncmp(np->package, KSU_PACKAGE_NAME, KSU_MAX_PACKAGE_NAME) == 0) {
+-            pr_info("Crowning manager: uid=%d\n", np->uid);
++        if (strncmp(np->package, pkg, KSU_MAX_PACKAGE_NAME) == 0) {
++            pr_info("Crowning manager: %s uid=%d\n", pkg, np->uid);
+             ksu_set_manager_appid(np->uid);
+-            break;
++            strscpy(cached_manager_pkg, pkg, sizeof(cached_manager_pkg));
++            strscpy(cached_manager_apk_path, apk, sizeof(cached_manager_apk_path));
++            return true;
+         }
+     }
++    return false;
+ }
+ 
+ struct data_path {
+@@ -73,15 +77,10 @@ struct my_dir_context {
+ 
+ static bool maybe_manager_apk_dir(const char *path)
+ {
+-    _Static_assert(sizeof(KSU_PACKAGE_NAME) < KSU_MAX_PACKAGE_NAME, "KSU_PACKAGE_NAME too long!");
+     char pkg[KSU_MAX_PACKAGE_NAME];
+-    if (get_pkg_from_apk_dir_path(pkg, path) < 0) {
+-        pr_err("Failed to get package name from apk dir path: %s\n", path);
+-        return false;
+-    }
+ 
+-    // pkg is `<real package>`
+-    return strncmp(pkg, KSU_PACKAGE_NAME, sizeof(KSU_PACKAGE_NAME)) == 0;
++    // multi manager: any package may be a manager, the signature decides
++    return get_pkg_from_apk_dir_path(pkg, path) == 0;
+ }
+ 
+ static FILLDIR_RETURN_TYPE my_actor(struct dir_context *ctx, const char *name, int namelen, loff_t off, u64 ino,
+@@ -126,7 +125,6 @@ static FILLDIR_RETURN_TYPE my_actor(struct dir_context *ctx, const char *name, i
+     if (d_type == DT_REG && namelen == 8 && !memcmp(name, "base.apk", 8)) {
+         if (maybe_manager_apk_dir(my_ctx->parent_dir)) {
+             snprintf(candidate_path, DATA_PATH_LEN, "%s/%.*s", my_ctx->parent_dir, namelen, name);
+-            strcpy(cached_manager_apk_path, candidate_path);
+         }
+         // As soon as we met the base.apk, we can stop
+         return FILLDIR_ACTOR_STOP;
+@@ -193,17 +191,20 @@ static void search_manager(const char *path, int depth, struct list_head *uid_da
+             if (!candidate_path[0])
+                 goto skip_iterate;
+ 
+-            // As soon as we get the manager apk path, we can stop
+-            stop = 1;
+-
+             bool is_manager = is_manager_apk(candidate_path);
+             pr_info("Found manager base.apk at path: %s, is_manager: %d\n", candidate_path, is_manager);
+ 
+             // Only crown if signature verification pass
+-            if (unlikely(!is_manager))
+-                goto skip_iterate;
++            if (is_manager) {
++                char pkg[KSU_MAX_PACKAGE_NAME];
+ 
+-            crown_manager(candidate_path, uid_data);
++                // As soon as a manager is crowned, we can stop
++                if (get_pkg_from_apk_dir_path(pkg, pos->dirpath) == 0 && crown_manager(candidate_path, pkg, uid_data))
++                    stop = 1;
++            }
++
++            // reset for the next directory
++            candidate_path[0] = 0;
+ 
+         skip_iterate:
+             list_del(&pos->list);
+@@ -295,30 +296,35 @@ void track_throne(bool prune_only)
+     if (prune_only)
+         goto prune;
+ 
+-    // first, check if manager_uid exist!
++    // first, check if the crowned manager still exists!
+     uid_t manager_package_uid = KSU_INVALID_APPID;
+     bool need_rescan = false;
+-    list_for_each_entry (np, &uid_list, list) {
+-        if (strcmp(np->package, KSU_PACKAGE_NAME) == 0) {
+-            manager_package_uid = np->uid;
+-            break;
++    if (cached_manager_pkg[0]) {
++        list_for_each_entry (np, &uid_list, list) {
++            if (strcmp(np->package, cached_manager_pkg) == 0) {
++                manager_package_uid = np->uid;
++                break;
++            }
+         }
+     }
+ 
+     if (manager_package_uid == KSU_INVALID_APPID) {
+         cached_manager_apk_path[0] = 0;
++        cached_manager_pkg[0] = 0;
+         if (ksu_is_manager_appid_valid()) {
+             pr_info("manager is uninstalled, invalidate it!\n");
+             ksu_invalidate_manager_uid();
+-            goto prune;
+         }
++        // multi manager: any installed app may be the manager, search again
++        need_rescan = true;
+     } else {
+         if (!ksu_is_manager_appid_valid()) {
+             need_rescan = true;
+-        } else if (unlikely(np->uid != ksu_get_manager_appid())) {
++        } else if (unlikely(manager_package_uid != ksu_get_manager_appid())) {
+             // this should not happen in normal android system
+             pr_info("manager uid changed, invalidate it!\n");
+             cached_manager_apk_path[0] = 0;
++            cached_manager_pkg[0] = 0;
+             ksu_invalidate_manager_uid();
+             need_rescan = true;
+         } else {
+@@ -341,7 +347,7 @@ void track_throne(bool prune_only)
+                 pr_err("stat cached manager path failed: %d (path=%s)\n", ret, cached_manager_apk_path);
+             }
+         }
+-        pr_info("Searching manager " KSU_PACKAGE_NAME "...\n");
++        pr_info("Searching manager...\n");
+         search_manager("/data/app", 2, &uid_list);
+         pr_info("Search manager finished\n");
+     }
