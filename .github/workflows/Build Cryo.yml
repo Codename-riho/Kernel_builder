@@ -853,7 +853,7 @@ jobs:
           set -euo pipefail
           die() { echo "::error::$*"; exit 1; }
 
-          MULTI_MANAGER_PATCH="https://raw.githubusercontent.com/RapliVx/kernel_builder/refs/heads/main/patch/ksun-add-more-managers-support.patch"
+          MULTI_MANAGER_PATCH="https://raw.githubusercontent.com/Codename-riho/Kernel_builder/refs/heads/Builders/.github/Patches/ksun-add-more-managers-supportcryomod.patch"
           EXTRA_PATCH_URL=""
 
           # Konfigurasi per manager
