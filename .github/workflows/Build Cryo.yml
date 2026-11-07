@@ -212,6 +212,13 @@ jobs:
         run: |
             echo "vm.swappiness=90" | sudo tee -a /etc/sysctl.conf
             sudo sysctl -p
+
+      - name: "⚡ Setup ccache"
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: kernel-${{ env.DEFCONFIG_NAME }}
+          max-size: 2G
+          restore-keys: kernel-
             
       - name: "🎭 Clone kernel source"
         working-directory: ./${{ env.KERNEL_LOC_DIR }}
@@ -612,88 +619,139 @@ jobs:
           fi
           echo "✅ BBRv3 + PLB terpasang"
 
-      - name: "💉 Inject Kprofiles + set default mode (non-fatal)"
+      - name: "💉 Inject Kprofiles + set default mode"
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
-          KP_MODE: "0" # 0 = Default/Disabled, 1 = Battery saver, 2 = Balance, 3 = Performance
+          KP_MODE: "0"        # 0 = Default/Disabled, 1 = Battery saver, 2 = Balance, 3 = Performance
+          KP_STRICT: "0"      # 0 = gagal tetap lanjut build (non-fatal), 1 = build berhenti jika gagal
+          KP_REF: ""          # opsional: tag/branch/commit untuk mengunci versi (kosong = terbaru)
         run: |
           set -uo pipefail
+          export GIT_TERMINAL_PROMPT=0
 
           CFG="arch/arm64/configs/${{ env.DEFCONFIG_NAME }}"
           KP_DIR="drivers/misc/kprofiles"
+          KP_REPO="https://github.com/dakkshesh07/Kprofiles.git"
+          FILES=("$CFG" drivers/misc/Kconfig drivers/misc/Makefile)
+          CLEAN_SED='/^CONFIG_KPROFILES\b/d;/^# CONFIG_KPROFILES is not set/d;/^CONFIG_KP_DEFAULT_MODE/d;/^CONFIG_AUTO_KPROFILES/d'
           BAK="$(mktemp -d)"
-          CLONED=0
+          trap 'rm -rf "$BAK"' EXIT
+
+          info() { echo "ℹ️ $*"; }
+          ok()   { echo "✅ $*"; }
+          warn() { echo "::warning::$*"; }
+          fail() { echo "❌ $*" >&2; return 1; }
+
+          bak_name() { echo "$BAK/${1//\//_}"; }
 
           # Cadangan file yang akan diubah, untuk rollback jika gagal
-          for f in "$CFG" drivers/misc/Kconfig drivers/misc/Makefile; do
-            [ -f "$f" ] && cp -p "$f" "$BAK/$(echo "$f" | tr '/' '_')"
+          for f in "${FILES[@]}"; do
+            [ -f "$f" ] && cp -p "$f" "$(bak_name "$f")"
           done
+
+          # Apakah folder Kprofiles memang bagian dari repo kernel (tracked git)?
+          kp_is_tracked() {
+            git ls-files --error-unmatch "$KP_DIR/Kconfig" >/dev/null 2>&1
+          }
+
+          fetch_kprofiles() {
+            local i
+            for i in 1 2 3; do
+              rm -rf "$KP_DIR"
+              if git clone -q --depth=1 ${KP_REF:+--branch "$KP_REF"} "$KP_REPO" "$KP_DIR" 2>/dev/null; then
+                rm -rf "$KP_DIR/.git"
+                return 0
+              fi
+              echo "⚠️ Clone gagal ($i/3)"
+              [ "$i" -lt 3 ] && sleep $((i * 10))
+            done
+            rm -rf "$KP_DIR"
+            return 1
+          }
 
           inject() {
             set -euo pipefail
-            [ -f "$CFG" ] || { echo "$CFG tidak ditemukan"; return 1; }
 
-            # ── 1) Inject source hanya jika belum ada ──
-            if [ -f "$KP_DIR/Kconfig" ]; then
-              echo "ℹ️ Kprofiles sudah ada di source, inject dilewati"
+            [[ "$KP_MODE" =~ ^[0-3]$ ]] || fail "KP_MODE tidak valid: '$KP_MODE' (harus 0-3)"
+            [ -f "$CFG" ]                || fail "$CFG tidak ditemukan"
+            [ -f drivers/misc/Kconfig ]  || fail "drivers/misc/Kconfig tidak ditemukan"
+            [ -f drivers/misc/Makefile ] || fail "drivers/misc/Makefile tidak ditemukan"
+
+            # ── 1) Source: pakai bawaan repo jika tracked, selain itu selalu ambil bersih ──
+            if kp_is_tracked; then
+              info "Kprofiles adalah bagian dari source kernel, unduh dilewati"
             else
-              echo "📦 Mengunduh Kprofiles..."
-              local ok=0 i
-              for i in 1 2 3; do
-                if git clone -q --depth=1 https://github.com/dakkshesh07/Kprofiles.git "$KP_DIR"; then ok=1; break; fi
-                echo "⚠️ Clone gagal ($i/3)"; rm -rf "$KP_DIR"; sleep $((i*10))
-              done
-              [ "$ok" = 1 ] || { echo "Gagal clone Kprofiles"; return 1; }
-              CLONED=1
-              rm -rf "$KP_DIR/.git"
-
-              echo "🔧 Menyambungkan ke Kconfig & Makefile..."
-              grep -q 'drivers/misc/kprofiles/Kconfig' drivers/misc/Kconfig \
-                || sed -i '/^menu "Misc devices"/a source "drivers/misc/kprofiles/Kconfig"' drivers/misc/Kconfig
-              grep -q 'drivers/misc/kprofiles/Kconfig' drivers/misc/Kconfig \
-                || { echo "Kconfig gagal disambungkan"; return 1; }
-
-              grep -qF 'CONFIG_KPROFILES' drivers/misc/Makefile \
-                || echo 'obj-$(CONFIG_KPROFILES) += kprofiles/' >> drivers/misc/Makefile
-              grep -qF 'CONFIG_KPROFILES' drivers/misc/Makefile \
-                || { echo "Makefile gagal disambungkan"; return 1; }
+              echo "📦 Mengunduh Kprofiles${KP_REF:+ (ref: $KP_REF)}..."
+              fetch_kprofiles || fail "Gagal clone Kprofiles"
             fi
+            [ -f "$KP_DIR/Kconfig" ] && [ -f "$KP_DIR/Makefile" ] \
+              || fail "Isi $KP_DIR tidak lengkap (Kconfig/Makefile hilang)"
 
-            # ── 2) Set nilai di defconfig ──
-            sed -i '/^CONFIG_KPROFILES\b/d;/^# CONFIG_KPROFILES is not set/d;/^CONFIG_KP_DEFAULT_MODE/d;/^CONFIG_AUTO_KPROFILES/d' "$CFG"
+            # ── 2) Sambungkan ke Kconfig (selalu dicek, idempotent) ──
+            echo "🔧 Menyambungkan ke Kconfig & Makefile..."
+            if ! grep -q 'drivers/misc/kprofiles/Kconfig' drivers/misc/Kconfig; then
+              if grep -q '^menu "Misc devices"' drivers/misc/Kconfig; then
+                sed -i '/^menu "Misc devices"/a source "drivers/misc/kprofiles/Kconfig"' drivers/misc/Kconfig
+              else
+                # Cadangan jika anchor menu tidak ada: taruh di akhir file
+                printf '\nsource "drivers/misc/kprofiles/Kconfig"\n' >> drivers/misc/Kconfig
+              fi
+            fi
+            grep -q 'drivers/misc/kprofiles/Kconfig' drivers/misc/Kconfig \
+              || fail "Kconfig gagal disambungkan"
+
+            # ── 3) Sambungkan ke Makefile ──
+            if ! grep -Eq '^obj-\$\(CONFIG_KPROFILES\)[[:space:]]*\+?=[[:space:]]*kprofiles/' drivers/misc/Makefile; then
+              printf '\nobj-$(CONFIG_KPROFILES) += kprofiles/\n' >> drivers/misc/Makefile
+            fi
+            grep -Eq '^obj-\$\(CONFIG_KPROFILES\)' drivers/misc/Makefile \
+              || fail "Makefile gagal disambungkan"
+
+            # ── 4) Set nilai di defconfig ──
+            echo "🔥 Mengaktifkan Kprofiles di defconfig..."
+            sed -i "$CLEAN_SED" "$CFG"
             {
               echo "CONFIG_KPROFILES=y"
               echo "CONFIG_KP_DEFAULT_MODE=${KP_MODE}"
               echo "CONFIG_AUTO_KPROFILES_NONE=y"
             } >> "$CFG"
 
-            grep -q "^CONFIG_KP_DEFAULT_MODE=${KP_MODE}\$" "$CFG" \
-              || { echo "Gagal set KP_DEFAULT_MODE"; return 1; }
+            # ── 5) Verifikasi akhir ──
+            grep -qx "CONFIG_KPROFILES=y" "$CFG"                      || fail "CONFIG_KPROFILES tidak terpasang"
+            grep -qx "CONFIG_KP_DEFAULT_MODE=${KP_MODE}" "$CFG"       || fail "KP_DEFAULT_MODE tidak terpasang"
           }
 
-          # Jalankan di subshell supaya kegagalan tidak mematikan step
-          if ( inject ); then
-            echo "✅ Kprofiles aktif, default mode = ${KP_MODE}"
-          else
-            echo "::warning::Inject Kprofiles gagal, dilewati dan Kprofiles dinonaktifkan"
-
-            # Rollback: pulihkan file asli, buang source hasil clone
-            for f in "$CFG" drivers/misc/Kconfig drivers/misc/Makefile; do
-              b="$BAK/$(echo "$f" | tr '/' '_')"
+          rollback() {
+            local f b
+            for f in "${FILES[@]}"; do
+              b="$(bak_name "$f")"
               [ -f "$b" ] && cp -p "$b" "$f"
             done
-            # Subshell tidak mewariskan CLONED, jadi cek langsung: hapus hanya jika tidak ada di source asli
-            if [ -d "$KP_DIR" ] && ! git ls-files --error-unmatch "$KP_DIR/Kconfig" >/dev/null 2>&1; then
+            # Buang source hasil clone, tapi jangan sentuh jika memang bagian repo
+            if [ -d "$KP_DIR" ] && ! kp_is_tracked; then
               rm -rf "$KP_DIR"
             fi
+            if [ -f "$CFG" ]; then
+              sed -i "$CLEAN_SED" "$CFG" || true
+              echo "# CONFIG_KPROFILES is not set" >> "$CFG"
+            fi
+          }
 
-            # Pastikan Kprofiles mati di defconfig
-            sed -i '/^CONFIG_KPROFILES\b/d;/^# CONFIG_KPROFILES is not set/d;/^CONFIG_KP_DEFAULT_MODE/d;/^CONFIG_AUTO_KPROFILES/d' "$CFG" 2>/dev/null || true
-            echo "# CONFIG_KPROFILES is not set" >> "$CFG"
-            echo "↩️ Rollback selesai, Kprofiles nonaktif"
+          # Dipanggil sebagai perintah biasa (bukan di dalam 'if') agar set -e di dalam inject() aktif
+          ( inject )
+          RC=$?
+
+          if [ "$RC" -eq 0 ]; then
+            ok "Kprofiles aktif, default mode = ${KP_MODE}"
+            exit 0
           fi
 
-          rm -rf "$BAK"
+          rollback
+          if [ "$KP_STRICT" = "1" ]; then
+            echo "::error::Inject Kprofiles gagal, build dihentikan (KP_STRICT=1)"
+            exit "$RC"
+          fi
+          warn "Inject Kprofiles gagal, dilewati. Kprofiles dinonaktifkan dan build tetap lanjut"
           exit 0
           
       - name: "🏜️📦 Add Droidspaces Support (kABI patch + GKI defconfig)"
