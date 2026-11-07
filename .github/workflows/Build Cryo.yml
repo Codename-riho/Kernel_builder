@@ -1076,27 +1076,87 @@ jobs:
           echo "${VARIANT_NAME}|${KSU_MANAGER}|${KSU_REF_USED:-?}|${VER}|${KPM_STATE}|${SUSFS_TXT}|${EXTRA_TXT}" \
             > "$WORK_DIR/ksu_info.txt"
             
-          # ── 3) Tambahkan edition spesial cryo ──
-          # Nama versi KSU: tambahkan "-Cryo-Edition" bila driver mendukungnya
-          SUFFIX="Cryo-Edition"
-          used_in_c() { grep -rqE --include='*.c' --include='*.h' "\b$1\b" "$KSU_DIR" 2>/dev/null; }
+          # ── 4) Edition Spesial Cryo: ganti "dirty" → SUFFIX, lalu tambahkan SUFFIX ──
+          SUFFIX="CryoExd"
+          KFILES=("$KSU_DIR/Kbuild" "$KSU_DIR/Makefile")
 
-          if grep -q 'KSU_FULL_NAME_FORMAT' "$KSU_DIR/Kconfig" 2>/dev/null; then
-            # BakaSU: buang "-dirty", set format lewat config
-            sed -i 's/\$(KSU_COMMIT_SHA)-dirty/$(KSU_COMMIT_SHA)/' "$KSU_DIR/Kbuild"
-            scripts/config --file "$CONFIG_PATH" \
-              --set-str CONFIG_KSU_FULL_NAME_FORMAT "%TAG_NAME%-%COMMIT_SHA%-$SUFFIX"
-            echo "✅ Nama versi KSU: <tag>-<sha>-$SUFFIX"
-          elif used_in_c KSU_VERSION_FULL; then
-            echo "::warning::$KSU_MANAGER memakai KSU_VERSION_FULL tanpa FULL_NAME_FORMAT, perlu tinjau manual"
-          elif used_in_c KSU_VERSION_TAG && grep -q 'DKSU_VERSION_TAG=' "$KSU_DIR/Kbuild"; then
-            # KernelSU-Next dan sejenisnya: tambahkan suffix pada tag
-            sed -i -E 's/(-DKSU_VERSION_TAG=\\"\$\([A-Z_]+\))/\1-'"$SUFFIX"'/' "$KSU_DIR/Kbuild"
-            echo "✅ Tag versi KSU diberi suffix -$SUFFIX"
-          else
-            echo "ℹ️ $KSU_MANAGER tidak punya nama versi di driver, tidak ada yang diubah."
-          fi
-        
+          info() { echo "ℹ️ $*"; }
+          ok()   { echo "✅ $*"; }
+          warn() { echo "::warning::$*"; }
+
+          used_in_c() {
+            grep -rqw --include='*.c' --include='*.h' -- "$1" "$KSU_DIR" 2>/dev/null
+          }
+
+          cryo_edition() {
+            if [ ! -d "$KSU_DIR" ]; then
+              warn "Direktori KSU '$KSU_DIR' tidak ditemukan, langkah 4 dilewati"
+              return 0
+            fi
+
+            # Hanya proses file yang benar-benar ada
+            local existing=() f
+            for f in "${KFILES[@]}"; do
+              [ -f "$f" ] && existing+=("$f")
+            done
+            if [ "${#existing[@]}" -eq 0 ]; then
+              warn "Kbuild/Makefile tidak ditemukan di $KSU_DIR"
+              return 0
+            fi
+
+            # Buang semua jejak "dirty" dari penyusun versi (opsi --dirty dan teks -dirty)
+            for f in "${existing[@]}"; do
+              sed -i.bak -E \
+                -e 's/ --dirty(=[^ )"]*)?//g' \
+                -e 's/-dirty//g' "$f"
+              if cmp -s "$f" "$f.bak"; then
+                info "$(basename "$f"): tidak ada 'dirty' yang perlu dibuang"
+              else
+                ok "$(basename "$f"): jejak 'dirty' dibuang"
+              fi
+              rm -f "$f.bak"
+            done
+
+            # Tambahkan SUFFIX sesuai cara driver menyusun nama versi
+            if grep -q 'KSU_FULL_NAME_FORMAT' "$KSU_DIR/Kconfig" 2>/dev/null; then
+              # BakaSU: format nama versi diatur lewat config
+              scripts/config --file "$CONFIG_PATH" \
+                --set-str CONFIG_KSU_FULL_NAME_FORMAT "%TAG_NAME%-%COMMIT_SHA%-$SUFFIX"
+              ok "Nama versi KSU: <tag>-<sha>-$SUFFIX"
+
+            elif used_in_c KSU_VERSION_FULL; then
+              warn "$KSU_MANAGER memakai KSU_VERSION_FULL tanpa FULL_NAME_FORMAT, suffix perlu dipasang manual"
+
+            elif used_in_c KSU_VERSION_TAG && grep -q 'DKSU_VERSION_TAG=' "$KSU_DIR/Kbuild"; then
+              # KernelSU-Next dan sejenisnya: tambahkan suffix pada tag
+              if grep -q -- "-$SUFFIX" "$KSU_DIR/Kbuild"; then
+                info "Suffix -$SUFFIX sudah ada di Kbuild, dilewati"
+              else
+                sed -i -E 's/(-DKSU_VERSION_TAG=\\"\$\([A-Z_]+\))/\1-'"$SUFFIX"'/' "$KSU_DIR/Kbuild"
+                # Verifikasi: pastikan sed benar-benar mengubah sesuatu
+                if grep -q -- "-$SUFFIX" "$KSU_DIR/Kbuild"; then
+                  ok "Tag versi KSU diberi suffix -$SUFFIX"
+                else
+                  warn "Pola KSU_VERSION_TAG di Kbuild tidak cocok, suffix gagal dipasang"
+                fi
+              fi
+
+            else
+              info "$KSU_MANAGER tidak punya nama versi di driver, tidak ada yang diubah"
+            fi
+
+            # Cek sisa "dirty" di baris kode (komentar diabaikan)
+            local left
+            left=$(grep -hniE 'dirty' "${existing[@]}" 2>/dev/null \
+                   | grep -vE '^[0-9]+:[[:space:]]*#' || true)
+            if [ -n "$left" ]; then
+              warn "Masih ada 'dirty' di penyusun versi, tinjau manual:"
+              echo "$left"
+            fi
+          }
+
+          cryo_edition
+     
       - name: "ඞ Inject SUSFS Integration"
         if: ${{ matrix.kernel.enable_ksu == true && env.SUSFS_SUPPORT == 'true' }}
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
