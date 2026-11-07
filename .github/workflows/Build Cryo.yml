@@ -854,7 +854,7 @@ jobs:
           die() { echo "::error::$*"; exit 1; }
 
           MULTI_MANAGER_PATCH="https://raw.githubusercontent.com/Codename-riho/Kernel_builder/refs/heads/Builders/.github/Patches/ksun-add-more-managers-supportcryomod.patch"
-          EXTRA_PATCH_URL=""
+          EXTRA_PATCH_URL="https://raw.githubusercontent.com/Codename-riho/Kernel_builder/refs/heads/Builders/.github/Patches/ksu-official-multi-manager.patch"
 
           # Konfigurasi per manager
           case "$KSU_MANAGER" in
@@ -901,7 +901,7 @@ jobs:
               SETUP_BRANCH=main
               DEFAULT_REF=main
               NEED_SUSFS_PATCH=1
-              EXTRA_PATCH_URL="$MULTI_MANAGER_PATCH"
+              EXTRA_PATCH_URL="$EXTRA_PATCH_URL"
               ;;
             *)
               die "Fatal Error: Varian manager tidak dikenal: $KSU_MANAGER"
