@@ -1526,7 +1526,7 @@ jobs:
           # Proses yang SELALU melihat versi ASLI (pemanggil libvintf). Nama proses utama, maks 15 karakter.
           KEEP_COMMS: "init vendor_init system_server vold update_engine servicemanager hwservicemanage vndservicemanag vintf checkvintf"
           # 1 = catat nama tiap proses sekali di dmesg (SPOOF/REAL)
-          VINTF_SPOOF_DEBUG: "1"
+          VINTF_SPOOF_DEBUG: "0"
         run: |
           set -euo pipefail
 
