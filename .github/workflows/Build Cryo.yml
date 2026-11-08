@@ -1178,7 +1178,27 @@ jobs:
               ok "Nama versi KSU: <tag>-<sha>-$SUFFIX"
 
             elif used_in_c KSU_VERSION_FULL; then
-              warn "$KSU_MANAGER memakai KSU_VERSION_FULL tanpa FULL_NAME_FORMAT, suffix perlu dipasang manual"
+              # SukiSU dan sejenisnya: KSU_VERSION_FULL disusun di Makefile/Kbuild
+              # sebagai v<tag>-<sha>@<branch>; sisipkan suffix sebelum '@'
+              local vf_file="" vf
+              for vf in "${existing[@]}"; do
+                if grep -qE '^[[:space:]]*(override[[:space:]]+)?KSU_VERSION_FULL[[:space:]]*:?=' "$vf"; then
+                  vf_file="$vf"; break
+                fi
+              done
+
+              if [ -z "$vf_file" ]; then
+                warn "$KSU_MANAGER memakai KSU_VERSION_FULL tapi definisinya tidak ditemukan di Makefile/Kbuild, suffix perlu dipasang manual"
+              elif grep -qE "^[[:space:]]*(override[[:space:]]+)?KSU_VERSION_FULL[[:space:]]*:?=.*-$SUFFIX@" "$vf_file"; then
+                info "Suffix -$SUFFIX sudah ada di $(basename "$vf_file"), dilewati"
+              else
+                sed -i -E "/^[[:space:]]*(override[[:space:]]+)?KSU_VERSION_FULL[[:space:]]*:?=/ s/@/-$SUFFIX@/g" "$vf_file"
+                if grep -qE "KSU_VERSION_FULL[[:space:]]*:?=.*-$SUFFIX@" "$vf_file"; then
+                  ok "Nama versi KSU: v<tag>-<sha>-$SUFFIX@<branch>"
+                else
+                  warn "Pola KSU_VERSION_FULL di $(basename "$vf_file") tidak cocok, suffix gagal dipasang"
+                fi
+              fi
 
             elif used_in_c KSU_VERSION_TAG && grep -q 'DKSU_VERSION_TAG=' "$KSU_DIR/Kbuild"; then
               # KernelSU-Next dan sejenisnya: tambahkan suffix pada tag
@@ -1195,7 +1215,7 @@ jobs:
               fi
 
             else
-              info "$KSU_MANAGER tidak punya nama versi di driver, tidak ada yang diubah"
+              info "$KSU_MANAGER: driver hanya punya versi numerik, nama versi dibentuk ksud di userspace, tidak ada yang diubah"
             fi
 
             # Cek sisa "dirty" di baris kode (komentar diabaikan)
