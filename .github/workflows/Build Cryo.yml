@@ -12,9 +12,7 @@ permissions:
   contents: write
   actions: read
 
-on:
-  schedule:
-    - cron: "0 17 * * 5"
+on: 
   workflow_dispatch:
      inputs:
       ksu_manager:
