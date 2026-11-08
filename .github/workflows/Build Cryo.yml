@@ -879,7 +879,7 @@ jobs:
             SukiSU-Ultra-susfs)
               REPO="SukiSU-Ultra/SukiSU-Ultra"
               SETUP_BRANCH=main
-              DEFAULT_REF=susfs_new
+              DEFAULT_REF=builtin-new
               NEED_SUSFS_PATCH=0
               ;;
             KernelSU-Next-pershoot)
