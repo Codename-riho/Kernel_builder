@@ -1518,14 +1518,14 @@ jobs:
             echo "ℹ️ Source tidak mereferensikan CONFIG_${SYM}: fitur kemungkinan selalu terkompilasi (tanpa gate)"
           fi
 
-      - name: "🦎 Kernel Version Spoof (terlihat semua proses kecuali VINTF)"
+      - name: "👀 Kernel Version Spoof (kompatibel SUSFS, VINTF tetap asli)"
         if: ${{ inputs.kernelSpoofVersion != '' }}
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
           SPOOF_VERSION: ${{ inputs.kernelSpoofVersion }}
-          # Proses yang tetap melihat versi ASLI (pemanggil libvintf). Nama proses utama, maks 15 karakter.
+          # Proses yang SELALU melihat versi ASLI (pemanggil libvintf). Nama proses utama, maks 15 karakter.
           KEEP_COMMS: "init vendor_init checkvintf vintf system_server vold update_engine servicemanager hwservicemanage vndservicemanag"
-          # 1 = catat nama tiap proses sekali di dmesg (SPOOF/REAL) untuk menyempurnakan KEEP_COMMS
+          # 1 = catat nama tiap proses sekali di dmesg (SPOOF/REAL)
           VINTF_SPOOF_DEBUG: "1"
         run: |
           set -euo pipefail
@@ -1556,7 +1556,7 @@ jobs:
           if [ "${#FULL_VERSION}" -gt 64 ]; then
             echo "::error::Versi terlalu panjang (${#FULL_VERSION} > 64 karakter)"; exit 1
           fi
-          echo "➡️ Dilihat semua proses kecuali KEEP_COMMS: $FULL_VERSION"
+          echo "➡️ Default untuk semua proses kecuali KEEP_COMMS (SUSFS menang bila aktif): $FULL_VERSION"
 
           # ── 2) Patch kernel (anchor teks, bukan nomor baris) ──
           export FULL_VERSION KEEP_COMMS VINTF_SPOOF_DEBUG
@@ -1600,11 +1600,20 @@ jobs:
 
           #include <linux/types.h>
 
+          struct new_utsname;
+
           #define VINTF_SPOOF_RELEASE "@RELEASE@"
           #define VINTF_SPOOF_DEBUG   @DEBUG@
 
           /* false = proses pemanggil harus melihat versi kernel asli (VINTF) */
           extern bool vintf_spoof_wanted(void);
+
+          /*
+           * Dipanggil setelah SUSFS:
+           *  - proses VINTF: release/version dikembalikan ke asli
+           *  - proses lain: spoof SUSFS dibiarkan; bila belum ada, pakai default workflow
+           */
+          extern void vintf_spoof_apply(struct new_utsname *tmp);
 
           #endif /* _LINUX_VINTF_SPOOF_H */
           """
@@ -1658,13 +1667,28 @@ jobs:
           #endif
               return spoof;
           }
+
+          void vintf_spoof_apply(struct new_utsname *tmp)
+          {
+              bool wanted = vintf_spoof_wanted();
+
+              down_read(&uts_sem);
+              if (!wanted) {
+                  /* VINTF: selalu versi asli, walau SUSFS sudah mengubahnya */
+                  strscpy(tmp->release, utsname()->release, sizeof(tmp->release));
+                  strscpy(tmp->version, utsname()->version, sizeof(tmp->version));
+              } else if (!strcmp(tmp->release, utsname()->release)) {
+                  /* belum ada yang spoof (SUSFS nonaktif/default): pakai nama dari workflow */
+                  strscpy(tmp->release, VINTF_SPOOF_RELEASE, sizeof(tmp->release));
+              }
+              up_read(&uts_sem);
+          }
           /* VINTF-SPOOF-END: fungsi keputusan */
 
           """
 
           CALL = ("\t/* VINTF-SPOOF-BEGIN */\n"
-                  "\tif (vintf_spoof_wanted())\n"
-                  "\t\tstrscpy(tmp.release, VINTF_SPOOF_RELEASE, sizeof(tmp.release));\n"
+                  "\tvintf_spoof_apply(&tmp);\n"
                   "\t/* VINTF-SPOOF-END */\n")
 
           keep_c = ", ".join('"%s"' % k for k in keep)
@@ -1682,17 +1706,30 @@ jobs:
           if "SYSCALL_DEFINE" in sys_src[start + 10:m.start()]:
               die("Anchor berada di luar fungsi newuname")
 
+          # Urutan: panggilan SUSFS harus SEBELUM blok kita (supaya SUSFS bisa dideteksi & dihormati)
+          fn_end = sys_src.find("\n}\n", m.start())
+          if fn_end < 0:
+              fn_end = len(sys_src)
+          if "susfs_spoof_uname" in sys_src[m.start():fn_end]:
+              die("susfs_spoof_uname berada SETELAH titik sisip. Pastikan step ini berjalan setelah 'Inject SUSFS Integration' dan periksa kernel/sys.c")
+          if "susfs_spoof_uname" in sys_src[start:m.start()]:
+              print("✅ Spoof uname SUSFS terdeteksi di newuname: nilai SUSFS akan dihormati")
+          else:
+              print("ℹ️ Spoof uname SUSFS tidak terdeteksi di newuname (SUSFS nonaktif atau API berbeda)")
+
           new_sys = sys_src[:m.start()] + CALL + sys_src[m.start():]
           new_sys = new_sys[:line_start] + func + new_sys[line_start:]
           new_sys = add_include(new_sys, SYS)
 
-          # fs/proc/version.c (/proc/version): opsional, gagal = peringatan saja
+          # fs/proc/version.c (/proc/version): opsional; dilewati bila SUSFS ikut menyentuhnya
           new_ver = None
           if os.path.isfile(VER):
               v = read(VER)
               fm = re.search(r"static int version_proc_show\(.*?\n\}", v, re.S)
               if "vintf_spoof" in v:
                   print("ℹ️ fs/proc/version.c sudah dipatch")
+              elif "susfs" in v.lower():
+                  print("ℹ️ fs/proc/version.c sudah ditangani SUSFS, tidak diubah")
               elif not fm or "utsname()->release" not in fm.group(0):
                   print("::warning::fs/proc/version.c: pola tidak cocok, /proc/version tidak di-spoof")
               else:
@@ -1712,12 +1749,12 @@ jobs:
 
           # ── 3) Verifikasi hasil ──
           grep -q 'VINTF-SPOOF-BEGIN' kernel/sys.c || { echo "::error::Patch sys.c tidak terpasang"; exit 1; }
-          grep -q 'vintf_spoof_wanted()' kernel/sys.c || { echo "::error::Panggilan spoof tidak ada"; exit 1; }
+          grep -q 'vintf_spoof_apply(&tmp)' kernel/sys.c || { echo "::error::Panggilan spoof tidak ada"; exit 1; }
           grep -q "VINTF_SPOOF_RELEASE \"${FULL_VERSION}\"" include/linux/vintf_spoof.h \
             || { echo "::error::Versi spoof di header tidak cocok"; exit 1; }
 
           echo "SPOOF_VERSION_APPLIED=${SPOOF_VERSION}" >> "$GITHUB_ENV"
-          echo "✅ Spoof terpasang: $FULL_VERSION (pengecualian: $KEEP_COMMS)"
+          echo "✅ Spoof terpasang: $FULL_VERSION (VINTF asli: $KEEP_COMMS)"
                           
       - name: "📝 Append custom Makefile line"
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
