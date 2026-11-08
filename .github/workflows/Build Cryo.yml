@@ -1518,107 +1518,206 @@ jobs:
             echo "ℹ️ Source tidak mereferensikan CONFIG_${SYM}: fitur kemungkinan selalu terkompilasi (tanpa gate)"
           fi
 
-      - name: "👀 Safe Kernel Version Spoof (VINTF Bypass)"
+      - name: "🦎 Kernel Version Spoof (terlihat semua proses kecuali VINTF)"
         if: ${{ inputs.kernelSpoofVersion != '' }}
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
           SPOOF_VERSION: ${{ inputs.kernelSpoofVersion }}
-          # Proses yang tetap melihat versi asli (nama persis, maks 15 karakter)
-          KEEP_COMMS: "init checkvintf vendor_init system_server vold"
+          # Proses yang tetap melihat versi ASLI (pemanggil libvintf). Nama proses utama, maks 15 karakter.
+          KEEP_COMMS: "init vendor_init checkvintf vintf system_server vold update_engine servicemanager hwservicemanage vndservicemanag"
+          # 1 = catat nama tiap proses sekali di dmesg (SPOOF/REAL) untuk menyempurnakan KEEP_COMMS
+          VINTF_SPOOF_DEBUG: "1"
         run: |
           set -euo pipefail
-          # Buang spasi/tab dari input; jika hasilnya kosong, lewati spoof
+
           SPOOF_VERSION="${SPOOF_VERSION//[[:space:]]/}"
           if [ -z "$SPOOF_VERSION" ]; then
             echo "ℹ️ kernelSpoofVersion kosong, spoof dilewati."
             exit 0
           fi
-          
-          echo "🔧 Memulai spoof versi kernel bersyarat..."
+          echo "🔧 Memulai spoof versi kernel..."
 
           # ── 1) Validasi input ──
           if ! [[ "$SPOOF_VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
-            echo "::error::kernelSpoofVersion tidak valid: '$SPOOF_VERSION' (contoh: 6.18 atau 6.18.2)"
-            exit 1
+            echo "::error::kernelSpoofVersion tidak valid: '$SPOOF_VERSION' (contoh: 6.18 atau 6.18.2)"; exit 1
           fi
-          if ! [[ "$LOCAL_VERSION" =~ ^[A-Za-z0-9._+-]*$ ]]; then
-            echo "::error::LOCAL_VERSION berisi karakter tidak valid: '$LOCAL_VERSION'"
-            exit 1
-          fi
-          if ! [[ "${BUILD_TIME:-}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
-            echo "::error::BUILD_TIME tidak valid: '${BUILD_TIME:-}'"
-            exit 1
-          fi
+          [[ "$LOCAL_VERSION" =~ ^[A-Za-z0-9._+-]*$ ]] \
+            || { echo "::error::LOCAL_VERSION tidak valid: '$LOCAL_VERSION'"; exit 1; }
+          [[ "${BUILD_TIME:-}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] \
+            || { echo "::error::BUILD_TIME tidak valid: '${BUILD_TIME:-}'"; exit 1; }
+          [[ "$VINTF_SPOOF_DEBUG" =~ ^[01]$ ]] \
+            || { echo "::error::VINTF_SPOOF_DEBUG harus 0 atau 1"; exit 1; }
           for c in $KEEP_COMMS; do
-            if ! [[ "$c" =~ ^[A-Za-z0-9_.-]{1,15}$ ]]; then
-              echo "::error::Nama proses tidak valid di KEEP_COMMS: '$c'"
-              exit 1
-            fi
+            [[ "$c" =~ ^[A-Za-z0-9_.-]{1,15}$ ]] \
+              || { echo "::error::Nama proses tidak valid di KEEP_COMMS: '$c'"; exit 1; }
           done
 
-          # Sama dengan hasil uname -r asli: <versi>-Cryo-XXX-<tanggal>
           FULL_VERSION="${SPOOF_VERSION}${LOCAL_VERSION}-${BUILD_TIME}"
           if [ "${#FULL_VERSION}" -gt 64 ]; then
-            echo "::error::Versi terlalu panjang (${#FULL_VERSION} > 64 karakter, batas utsname.release)"
-            exit 1
+            echo "::error::Versi terlalu panjang (${#FULL_VERSION} > 64 karakter)"; exit 1
           fi
-          echo "➡️ uname -r untuk aplikasi biasa: $FULL_VERSION"
+          echo "➡️ Dilihat semua proses kecuali KEEP_COMMS: $FULL_VERSION"
 
-          # ── 2) Sisipkan spoof ke kernel/sys.c berdasarkan anchor teks ──
-          export FULL_VERSION KEEP_COMMS
+          # ── 2) Patch kernel (anchor teks, bukan nomor baris) ──
+          export FULL_VERSION KEEP_COMMS VINTF_SPOOF_DEBUG
           python3 - <<'PY'
           import os, re, sys
 
-          path = "kernel/sys.c"
-          target = os.environ["FULL_VERSION"]
+          def die(msg):
+              print("::error::" + msg)
+              sys.exit(1)
+
+          def read(p):
+              with open(p, encoding="utf-8") as f:
+                  return f.read()
+
+          def write(p, s):
+              with open(p, "w", encoding="utf-8") as f:
+                  f.write(s)
+
+          def add_include(src, where):
+              m = re.search(r"^#include .*$", src, re.M)
+              if not m:
+                  die("Tidak ada #include di " + where)
+              return src[:m.end()] + "\n#include <linux/vintf_spoof.h>" + src[m.end():]
+
+          release = os.environ["FULL_VERSION"]
           keep = os.environ["KEEP_COMMS"].split()
+          debug = os.environ.get("VINTF_SPOOF_DEBUG", "0")
+          if not keep:
+              die("KEEP_COMMS kosong")
 
-          src = open(path, encoding="utf-8").read()
+          SYS, VER, HDR = "kernel/sys.c", "fs/proc/version.c", "include/linux/vintf_spoof.h"
 
-          if "VINTF-SPOOF-BEGIN" in src:
-              print("ℹ️ sys.c sudah dipatch, dilewati")
+          sys_src = read(SYS)
+          if "VINTF-SPOOF-BEGIN" in sys_src:
+              print("ℹ️ kernel/sys.c sudah dipatch, dilewati")
               sys.exit(0)
 
-          start = src.find("SYSCALL_DEFINE1(newuname")
-          if start < 0:
-              sys.exit("::error::SYSCALL newuname tidak ditemukan di kernel/sys.c")
+          HEADER = r"""/* SPDX-License-Identifier: GPL-2.0 */
+          #ifndef _LINUX_VINTF_SPOOF_H
+          #define _LINUX_VINTF_SPOOF_H
 
-          m = re.compile(r"^[ \t]*if \(copy_to_user\(name, &tmp, sizeof\(tmp\)\)\)", re.M).search(src, start)
-          if not m:
-              sys.exit("::error::Anchor copy_to_user tidak ditemukan di newuname")
-          if "SYSCALL_DEFINE" in src[start + 10:m.start()]:
-              sys.exit("::error::Anchor berada di luar fungsi newuname")
+          #include <linux/types.h>
+
+          #define VINTF_SPOOF_RELEASE "@RELEASE@"
+          #define VINTF_SPOOF_DEBUG   @DEBUG@
+
+          /* false = proses pemanggil harus melihat versi kernel asli (VINTF) */
+          extern bool vintf_spoof_wanted(void);
+
+          #endif /* _LINUX_VINTF_SPOOF_H */
+          """
+
+          FUNC = r"""/* VINTF-SPOOF-BEGIN: fungsi keputusan */
+          #if VINTF_SPOOF_DEBUG
+          static void vintf_spoof_debug(const char *pname, bool spoof)
+          {
+              static DEFINE_SPINLOCK(lock);
+              static char seen[96][TASK_COMM_LEN];
+              static int nseen;
+              unsigned long flags;
+              bool is_new = true;
+              int i;
+
+              spin_lock_irqsave(&lock, flags);
+              for (i = 0; i < nseen; i++) {
+                  if (!strcmp(seen[i], pname)) {
+                      is_new = false;
+                      break;
+                  }
+              }
+              if (is_new && nseen < ARRAY_SIZE(seen))
+                  strscpy(seen[nseen++], pname, TASK_COMM_LEN);
+              else
+                  is_new = false;
+              spin_unlock_irqrestore(&lock, flags);
+
+              if (is_new)
+                  pr_info("vintf-spoof: %s -> %s\n", pname, spoof ? "SPOOF" : "REAL");
+          }
+          #endif
+
+          bool vintf_spoof_wanted(void)
+          {
+              static const char * const keep[] = { @KEEP@ };
+              char pname[TASK_COMM_LEN];
+              bool spoof = true;
+              int i;
+
+              /* nama proses utama, bukan nama thread */
+              get_task_comm(pname, current->group_leader);
+              for (i = 0; i < ARRAY_SIZE(keep); i++) {
+                  if (!strcmp(pname, keep[i])) {
+                      spoof = false;
+                      break;
+                  }
+              }
+          #if VINTF_SPOOF_DEBUG
+              vintf_spoof_debug(pname, spoof);
+          #endif
+              return spoof;
+          }
+          /* VINTF-SPOOF-END: fungsi keputusan */
+
+          """
+
+          CALL = ("\t/* VINTF-SPOOF-BEGIN */\n"
+                  "\tif (vintf_spoof_wanted())\n"
+                  "\t\tstrscpy(tmp.release, VINTF_SPOOF_RELEASE, sizeof(tmp.release));\n"
+                  "\t/* VINTF-SPOOF-END */\n")
 
           keep_c = ", ".join('"%s"' % k for k in keep)
-          block = (
-              "\t/* VINTF-SPOOF-BEGIN */\n"
-              "\t{\n"
-              "\t\tstatic const char * const keep[] = { %s };\n"
-              "\t\tbool spoof = true;\n"
-              "\t\tint i;\n"
-              "\n"
-              "\t\tfor (i = 0; i < ARRAY_SIZE(keep); i++) {\n"
-              "\t\t\tif (!strcmp(current->comm, keep[i])) {\n"
-              "\t\t\t\tspoof = false;\n"
-              "\t\t\t\tbreak;\n"
-              "\t\t\t}\n"
-              "\t\t}\n"
-              "\t\tif (spoof)\n"
-              "\t\t\tstrscpy(tmp.release, \"%s\", sizeof(tmp.release));\n"
-              "\t}\n"
-              "\t/* VINTF-SPOOF-END */\n"
-          ) % (keep_c, target)
+          header = HEADER.replace("@RELEASE@", release).replace("@DEBUG@", debug)
+          func = FUNC.replace("@KEEP@", keep_c)
 
-          open(path, "w", encoding="utf-8").write(src[:m.start()] + block + src[m.start():])
-          print("patched kernel/sys.c")
+          # kernel/sys.c: fungsi keputusan sebelum newuname, pemanggilan sebelum copy_to_user
+          start = sys_src.find("SYSCALL_DEFINE1(newuname")
+          if start < 0:
+              die("SYSCALL newuname tidak ditemukan di kernel/sys.c")
+          line_start = sys_src.rfind("\n", 0, start) + 1
+          m = re.compile(r"^[ \t]*if \(copy_to_user\(name, &tmp, sizeof\(tmp\)\)\)", re.M).search(sys_src, start)
+          if not m:
+              die("Anchor copy_to_user tidak ditemukan di newuname")
+          if "SYSCALL_DEFINE" in sys_src[start + 10:m.start()]:
+              die("Anchor berada di luar fungsi newuname")
+
+          new_sys = sys_src[:m.start()] + CALL + sys_src[m.start():]
+          new_sys = new_sys[:line_start] + func + new_sys[line_start:]
+          new_sys = add_include(new_sys, SYS)
+
+          # fs/proc/version.c (/proc/version): opsional, gagal = peringatan saja
+          new_ver = None
+          if os.path.isfile(VER):
+              v = read(VER)
+              fm = re.search(r"static int version_proc_show\(.*?\n\}", v, re.S)
+              if "vintf_spoof" in v:
+                  print("ℹ️ fs/proc/version.c sudah dipatch")
+              elif not fm or "utsname()->release" not in fm.group(0):
+                  print("::warning::fs/proc/version.c: pola tidak cocok, /proc/version tidak di-spoof")
+              else:
+                  body = fm.group(0).replace(
+                      "utsname()->release",
+                      "(vintf_spoof_wanted() ? VINTF_SPOOF_RELEASE : utsname()->release)")
+                  new_ver = add_include(v[:fm.start()] + body + v[fm.end():], VER)
+          else:
+              print("::warning::fs/proc/version.c tidak ditemukan, /proc/version tidak di-spoof")
+
+          write(HDR, header)
+          write(SYS, new_sys)
+          if new_ver is not None:
+              write(VER, new_ver)
+          print("patched: " + HDR + ", " + SYS + (", " + VER if new_ver else ""))
           PY
 
           # ── 3) Verifikasi hasil ──
-          grep -q 'VINTF-SPOOF-BEGIN' kernel/sys.c || { echo "::error::Patch tidak terpasang"; exit 1; }
-          grep -q "strscpy(tmp.release, \"${FULL_VERSION}\"" kernel/sys.c || { echo "::error::Versi spoof tidak cocok"; exit 1; }
+          grep -q 'VINTF-SPOOF-BEGIN' kernel/sys.c || { echo "::error::Patch sys.c tidak terpasang"; exit 1; }
+          grep -q 'vintf_spoof_wanted()' kernel/sys.c || { echo "::error::Panggilan spoof tidak ada"; exit 1; }
+          grep -q "VINTF_SPOOF_RELEASE \"${FULL_VERSION}\"" include/linux/vintf_spoof.h \
+            || { echo "::error::Versi spoof di header tidak cocok"; exit 1; }
 
           echo "SPOOF_VERSION_APPLIED=${SPOOF_VERSION}" >> "$GITHUB_ENV"
-          echo "✅ Spoof terpasang di kernel/sys.c: $FULL_VERSION"
+          echo "✅ Spoof terpasang: $FULL_VERSION (pengecualian: $KEEP_COMMS)"
                           
       - name: "📝 Append custom Makefile line"
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
