@@ -1614,7 +1614,7 @@ jobs:
           static void vintf_spoof_debug(const char *pname, bool spoof)
           {
               static DEFINE_SPINLOCK(lock);
-              static char seen[96][TASK_COMM_LEN];
+              static char seen[512][TASK_COMM_LEN];
               static int nseen;
               unsigned long flags;
               bool is_new = true;
