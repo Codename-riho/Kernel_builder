@@ -1587,7 +1587,8 @@ jobs:
           if not keep:
               die("KEEP_COMMS kosong")
 
-          SYS, VER, HDR = "kernel/sys.c", "fs/proc/version.c", "include/linux/vintf_spoof.h"
+          SYS, VER, SYSCTL, HDR = ("kernel/sys.c", "fs/proc/version.c",
+                                   "kernel/utsname_sysctl.c", "include/linux/vintf_spoof.h")
 
           sys_src = read(SYS)
           if "VINTF-SPOOF-BEGIN" in sys_src:
@@ -1614,6 +1615,9 @@ jobs:
            *  - proses lain: spoof SUSFS dibiarkan; bila belum ada, pakai default workflow
            */
           extern void vintf_spoof_apply(struct new_utsname *tmp);
+
+          /* Nilai yang dilihat pembaca /proc/sys/kernel/osrelease (sama dengan uname -r) */
+          extern void vintf_spoof_osrelease(char *out, size_t len);
 
           #endif /* _LINUX_VINTF_SPOOF_H */
           """
@@ -1683,6 +1687,18 @@ jobs:
               }
               up_read(&uts_sem);
           }
+
+          /* Untuk /proc/sys/kernel/osrelease: urutan sama persis dengan newuname */
+          void vintf_spoof_osrelease(char *out, size_t len)
+          {
+              struct new_utsname tmp;
+
+              down_read(&uts_sem);
+              memcpy(&tmp, utsname(), sizeof(tmp));
+              up_read(&uts_sem);
+          @SUSFS@    vintf_spoof_apply(&tmp);
+              strscpy(out, tmp.release, len);
+          }
           /* VINTF-SPOOF-END: fungsi keputusan */
 
           """
@@ -1691,11 +1707,7 @@ jobs:
                   "\tvintf_spoof_apply(&tmp);\n"
                   "\t/* VINTF-SPOOF-END */\n")
 
-          keep_c = ", ".join('"%s"' % k for k in keep)
-          header = HEADER.replace("@RELEASE@", release).replace("@DEBUG@", debug)
-          func = FUNC.replace("@KEEP@", keep_c)
-
-          # kernel/sys.c: fungsi keputusan sebelum newuname, pemanggilan sebelum copy_to_user
+          # ── kernel/sys.c: titik sisip di newuname ──
           start = sys_src.find("SYSCALL_DEFINE1(newuname")
           if start < 0:
               die("SYSCALL newuname tidak ditemukan di kernel/sys.c")
@@ -1717,11 +1729,22 @@ jobs:
           else:
               print("ℹ️ Spoof uname SUSFS tidak terdeteksi di newuname (SUSFS nonaktif atau API berbeda)")
 
+          # Panggilan SUSFS untuk jalur osrelease, hanya jika bentuknya persis dikenali
+          susfs_c = ""
+          if re.search(r"susfs_spoof_uname\(\s*&tmp\s*\)", sys_src):
+              susfs_c = ("#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME\n"
+                         "    susfs_spoof_uname(&tmp);\n"
+                         "#endif\n")
+
+          keep_c = ", ".join('"%s"' % k for k in keep)
+          header = HEADER.replace("@RELEASE@", release).replace("@DEBUG@", debug)
+          func = FUNC.replace("@KEEP@", keep_c).replace("@SUSFS@", susfs_c)
+
           new_sys = sys_src[:m.start()] + CALL + sys_src[m.start():]
           new_sys = new_sys[:line_start] + func + new_sys[line_start:]
           new_sys = add_include(new_sys, SYS)
 
-          # fs/proc/version.c (/proc/version): opsional; dilewati bila SUSFS ikut menyentuhnya
+          # ── fs/proc/version.c (/proc/version): opsional; dilewati bila SUSFS ikut menyentuhnya ──
           new_ver = None
           if os.path.isfile(VER):
               v = read(VER)
@@ -1740,11 +1763,38 @@ jobs:
           else:
               print("::warning::fs/proc/version.c tidak ditemukan, /proc/version tidak di-spoof")
 
+          # ── kernel/utsname_sysctl.c (/proc/sys/kernel/osrelease): opsional ──
+          new_sc = None
+          if os.path.isfile(SYSCTL):
+              sc = read(SYSCTL)
+              fm = re.search(r"static int proc_do_uts_string\(.*?\n\}", sc, re.S)
+              um = re.search(r"^([ \t]*)up_read\(&uts_sem\);[ \t]*\n", fm.group(0), re.M) if fm else None
+              if "vintf_spoof_osrelease" in sc:
+                  print("ℹ️ kernel/utsname_sysctl.c sudah dipatch")
+              elif not fm or not um or "memcpy(tmp_data" not in fm.group(0)[:um.start()]:
+                  print("::warning::kernel/utsname_sysctl.c: pola proc_do_uts_string tidak cocok, osrelease tidak di-spoof")
+              else:
+                  fn, ind = fm.group(0), um.group(1)
+                  ins = (ind + "/* VINTF-OSRELEASE-BEGIN */\n"
+                         + ind + "if (!write && !strcmp(table->procname, \"osrelease\"))\n"
+                         + ind + "\tvintf_spoof_osrelease(tmp_data, sizeof(tmp_data));\n"
+                         + ind + "/* VINTF-OSRELEASE-END */\n")
+                  new_fn = fn[:um.end()] + ins + fn[um.end():]
+                  new_sc = add_include(sc[:fm.start()] + new_fn + sc[fm.end():], SYSCTL)
+          else:
+              print("::warning::kernel/utsname_sysctl.c tidak ditemukan, osrelease tidak di-spoof")
+
+          # Semua perhitungan sukses: baru tulis file
           write(HDR, header)
           write(SYS, new_sys)
+          done = [HDR, SYS]
           if new_ver is not None:
               write(VER, new_ver)
-          print("patched: " + HDR + ", " + SYS + (", " + VER if new_ver else ""))
+              done.append(VER)
+          if new_sc is not None:
+              write(SYSCTL, new_sc)
+              done.append(SYSCTL)
+          print("patched: " + ", ".join(done))
           PY
 
           # ── 3) Verifikasi hasil ──
@@ -1753,27 +1803,21 @@ jobs:
           grep -q "VINTF_SPOOF_RELEASE \"${FULL_VERSION}\"" include/linux/vintf_spoof.h \
             || { echo "::error::Versi spoof di header tidak cocok"; exit 1; }
 
+          echo "── Jalur yang di-spoof ──"
+          echo "✔ uname -r (syscall newuname)"
+          if grep -q 'vintf_spoof_wanted() ? VINTF_SPOOF_RELEASE' fs/proc/version.c 2>/dev/null; then
+            echo "✔ /proc/version"
+          else
+            echo "➖ /proc/version (tidak diubah)"
+          fi
+          if grep -q 'vintf_spoof_osrelease(tmp_data' kernel/utsname_sysctl.c 2>/dev/null; then
+            echo "✔ /proc/sys/kernel/osrelease"
+          else
+            echo "➖ /proc/sys/kernel/osrelease (tidak diubah, lihat peringatan di atas)"
+          fi
+
           echo "SPOOF_VERSION_APPLIED=${SPOOF_VERSION}" >> "$GITHUB_ENV"
           echo "✅ Spoof terpasang: $FULL_VERSION (VINTF asli: $KEEP_COMMS)"
-                          
-      - name: "📝 Append custom Makefile line"
-        working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
-        run: |
-          # cc-disable-warning: flag -Wno-* hanya dipasang jika compiler mengenalnya
-          # (clang lama seperti ZyC 14 tidak punya dua flag pertama)
-          if [ "$TOOLCHAIN_TYPE" = "custom-tools" ]; then
-            printf '%s\n' \
-              'KBUILD_CFLAGS += $(call cc-disable-warning,default-const-init-unsafe)' \
-              'KBUILD_CFLAGS += $(call cc-disable-warning,uninitialized-const-pointer)' \
-              'KBUILD_CFLAGS += -Wno-implicit-function-declaration' \
-              'KBUILD_CFLAGS += -Wno-sometimes-uninitialized' >> Makefile
-          else
-            echo 'KBUILD_CFLAGS += -Wno-implicit-function-declaration' >> Makefile
-          fi
-          # Tool host (dtc): redam peringatan clang baru. Harus KBUILD_HOSTCFLAGS, bukan HOSTCFLAGS.
-          echo 'KBUILD_HOSTCFLAGS += -Wno-unused-but-set-global' >> Makefile
-          
-          echo "✅ Flag Makefile ($TOOLCHAIN_TYPE) ditambahkan"
 
       - name: "✍️ Set kernel identity (localversion + build by/host)"
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
