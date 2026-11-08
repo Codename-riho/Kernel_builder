@@ -68,7 +68,12 @@ on:
         description: "Commit hash SUSFS4KSU (kosongkan untuk mengambil versi terbaru)"
         required: false
         type: string
-        default: ""         
+        default: "" 
+      kernelSpoofVersion:
+        description: "Spoof versi kernel di uname -r (format: X.Y atau X.Y.Z, kosong = nonaktif)"
+        required: false
+        type: string
+        default: ""
                                   
 jobs:
   build-kernels:
@@ -1514,6 +1519,101 @@ jobs:
           else
             echo "ℹ️ Source tidak mereferensikan CONFIG_${SYM}: fitur kemungkinan selalu terkompilasi (tanpa gate)"
           fi
+
+      - name: "👀 Safe Kernel Version Spoof (VINTF Bypass)"
+        if: ${{ inputs.kernelSpoofVersion != '' }}
+        working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
+        env:
+          SPOOF_VERSION: ${{ inputs.kernelSpoofVersion }}
+          # Proses yang tetap melihat versi asli (nama persis, maks 15 karakter)
+          KEEP_COMMS: "init checkvintf vendor_init system_server vold"
+        run: |
+          set -euo pipefail
+          echo "🔧 Memulai spoof versi kernel bersyarat..."
+
+          # ── 1) Validasi input ──
+          if ! [[ "$SPOOF_VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
+            echo "::error::kernelSpoofVersion tidak valid: '$SPOOF_VERSION' (contoh: 6.18 atau 6.18.2)"
+            exit 1
+          fi
+          if ! [[ "$LOCAL_VERSION" =~ ^[A-Za-z0-9._+-]*$ ]]; then
+            echo "::error::LOCAL_VERSION berisi karakter tidak valid: '$LOCAL_VERSION'"
+            exit 1
+          fi
+          if ! [[ "${BUILD_TIME:-}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            echo "::error::BUILD_TIME tidak valid: '${BUILD_TIME:-}'"
+            exit 1
+          fi
+          for c in $KEEP_COMMS; do
+            if ! [[ "$c" =~ ^[A-Za-z0-9_.-]{1,15}$ ]]; then
+              echo "::error::Nama proses tidak valid di KEEP_COMMS: '$c'"
+              exit 1
+            fi
+          done
+
+          # Sama dengan hasil uname -r asli: <versi>-Cryo-XXX-<tanggal>
+          FULL_VERSION="${SPOOF_VERSION}${LOCAL_VERSION}-${BUILD_TIME}"
+          if [ "${#FULL_VERSION}" -gt 64 ]; then
+            echo "::error::Versi terlalu panjang (${#FULL_VERSION} > 64 karakter, batas utsname.release)"
+            exit 1
+          fi
+          echo "➡️ uname -r untuk aplikasi biasa: $FULL_VERSION"
+
+          # ── 2) Sisipkan spoof ke kernel/sys.c berdasarkan anchor teks ──
+          export FULL_VERSION KEEP_COMMS
+          python3 - <<'PY'
+          import os, re, sys
+
+          path = "kernel/sys.c"
+          target = os.environ["FULL_VERSION"]
+          keep = os.environ["KEEP_COMMS"].split()
+
+          src = open(path, encoding="utf-8").read()
+
+          if "VINTF-SPOOF-BEGIN" in src:
+              print("ℹ️ sys.c sudah dipatch, dilewati")
+              sys.exit(0)
+
+          start = src.find("SYSCALL_DEFINE1(newuname")
+          if start < 0:
+              sys.exit("::error::SYSCALL newuname tidak ditemukan di kernel/sys.c")
+
+          m = re.compile(r"^[ \t]*if \(copy_to_user\(name, &tmp, sizeof\(tmp\)\)\)", re.M).search(src, start)
+          if not m:
+              sys.exit("::error::Anchor copy_to_user tidak ditemukan di newuname")
+          if "SYSCALL_DEFINE" in src[start + 10:m.start()]:
+              sys.exit("::error::Anchor berada di luar fungsi newuname")
+
+          keep_c = ", ".join('"%s"' % k for k in keep)
+          block = (
+              "\t/* VINTF-SPOOF-BEGIN */\n"
+              "\t{\n"
+              "\t\tstatic const char * const keep[] = { %s };\n"
+              "\t\tbool spoof = true;\n"
+              "\t\tint i;\n"
+              "\n"
+              "\t\tfor (i = 0; i < ARRAY_SIZE(keep); i++) {\n"
+              "\t\t\tif (!strcmp(current->comm, keep[i])) {\n"
+              "\t\t\t\tspoof = false;\n"
+              "\t\t\t\tbreak;\n"
+              "\t\t\t}\n"
+              "\t\t}\n"
+              "\t\tif (spoof)\n"
+              "\t\t\tstrscpy(tmp.release, \"%s\", sizeof(tmp.release));\n"
+              "\t}\n"
+              "\t/* VINTF-SPOOF-END */\n"
+          ) % (keep_c, target)
+
+          open(path, "w", encoding="utf-8").write(src[:m.start()] + block + src[m.start():])
+          print("patched kernel/sys.c")
+          PY
+
+          # ── 3) Verifikasi hasil ──
+          grep -q 'VINTF-SPOOF-BEGIN' kernel/sys.c || { echo "::error::Patch tidak terpasang"; exit 1; }
+          grep -q "strscpy(tmp.release, \"${FULL_VERSION}\"" kernel/sys.c || { echo "::error::Versi spoof tidak cocok"; exit 1; }
+
+          echo "SPOOF_VERSION_APPLIED=${SPOOF_VERSION}" >> "$GITHUB_ENV"
+          echo "✅ Spoof terpasang di kernel/sys.c: $FULL_VERSION"
                           
       - name: "📝 Append custom Makefile line"
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
@@ -2011,6 +2111,7 @@ jobs:
           TOOLCHAIN_TYPE: ${{ inputs.toolchain_type || 'android-tools' }}
           CUSTOM_CLANG_REPO: ${{ inputs.customClangRepo }}
           DEVICE_NAME: "Redmi Note 12 4G"
+          SPOOF_INPUT: ${{ inputs.kernelSpoofVersion }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -uo pipefail
