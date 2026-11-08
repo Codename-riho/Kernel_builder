@@ -1529,6 +1529,13 @@ jobs:
           KEEP_COMMS: "init checkvintf vendor_init system_server vold"
         run: |
           set -euo pipefail
+          # Buang spasi/tab dari input; jika hasilnya kosong, lewati spoof
+          SPOOF_VERSION="${SPOOF_VERSION//[[:space:]]/}"
+          if [ -z "$SPOOF_VERSION" ]; then
+            echo "ℹ️ kernelSpoofVersion kosong, spoof dilewati."
+            exit 0
+          fi
+          
           echo "🔧 Memulai spoof versi kernel bersyarat..."
 
           # ── 1) Validasi input ──
