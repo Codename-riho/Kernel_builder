@@ -1518,7 +1518,7 @@ jobs:
             echo "ℹ️ Source tidak mereferensikan CONFIG_${SYM}: fitur kemungkinan selalu terkompilasi (tanpa gate)"
           fi
 
-      - name: "👀 Kernel Version Spoof (kompatibel SUSFS, VINTF tetap asli)"
+      - name: "🦎 Kernel Version Spoof (kompatibel SUSFS, VINTF tetap asli)"
         if: ${{ inputs.kernelSpoofVersion != '' }}
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
