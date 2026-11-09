@@ -13,6 +13,8 @@ permissions:
   actions: read
 
 on: 
+  schedule:
+    - cron: "0 17 * * 5"
   workflow_dispatch:
      inputs:
       ksu_manager:
@@ -1517,6 +1519,25 @@ jobs:
           else
             echo "ℹ️ Source tidak mereferensikan CONFIG_${SYM}: fitur kemungkinan selalu terkompilasi (tanpa gate)"
           fi
+
+      - name: "📝 Append custom Makefile line"
+        working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
+        run: |
+          # cc-disable-warning: flag -Wno-* hanya dipasang jika compiler mengenalnya
+          # (clang lama seperti ZyC 14 tidak punya dua flag pertama)
+          if [ "$TOOLCHAIN_TYPE" = "custom-tools" ]; then
+            printf '%s\n' \
+              'KBUILD_CFLAGS += $(call cc-disable-warning,default-const-init-unsafe)' \
+              'KBUILD_CFLAGS += $(call cc-disable-warning,uninitialized-const-pointer)' \
+              'KBUILD_CFLAGS += -Wno-implicit-function-declaration' \
+              'KBUILD_CFLAGS += -Wno-sometimes-uninitialized' >> Makefile
+          else
+            echo 'KBUILD_CFLAGS += -Wno-implicit-function-declaration' >> Makefile
+          fi
+          # Tool host (dtc): redam peringatan clang baru. Harus KBUILD_HOSTCFLAGS, bukan HOSTCFLAGS.
+          echo 'KBUILD_HOSTCFLAGS += -Wno-unused-but-set-global' >> Makefile
+          
+          echo "✅ Flag Makefile ($TOOLCHAIN_TYPE) ditambahkan"
 
       - name: "🦎 Kernel Version Spoof (kompatibel SUSFS, VINTF tetap asli)"
         if: ${{ inputs.kernelSpoofVersion != '' }}
