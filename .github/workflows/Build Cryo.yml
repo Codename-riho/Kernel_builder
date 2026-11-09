@@ -858,8 +858,8 @@ jobs:
           set -euo pipefail
           die() { echo "::error::$*"; exit 1; }
 
-          PATCH_BASE="https://raw.githubusercontent.com/Codename-riho/Kernel_builder/refs/heads/Builders/.github/Patches"
-          KSUN_MULTI_PATCH="$PATCH_BASE/ksun-add-more-managers-supportcryomod.patch"
+          PATCH_BASE="https:https://raw.githubusercontent.com/Codename-riho/Kernel_builder/refs/heads/Builders/.github/Patches"
+          KSUN_MULTI_PATCH="$PATCH_BASE/ksun-add-more-managers-support-cryomod.patch"
           OFFICIAL_MULTI_PATCH="$PATCH_BASE/ksu-official-multi-manager.patch"
           EXTRA_PATCH_URL=""
           
