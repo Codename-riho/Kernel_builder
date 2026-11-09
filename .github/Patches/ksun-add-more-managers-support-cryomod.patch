@@ -1,8 +1,26 @@
-From: Dyatz <Codename-riho@github.com>
-Date: Mon, 9 Nov 2026 15:00:00 +0700
-Subject: [PATCH] kernel: add multi-manager support (2 slot, dynamic crown)
----
+From 83eb45dafa89de7daf63e516abb87470bcb57def Mon Sep 17 00:00:00 2001
+From: Codename-riho <cryokernel.next@gmail.com>
+Date: Mon, 9 Nov 2026 15:12:00 +0700
+Subject: [PATCH] kernel: add multi-manager support (2 slots, dynamic crown)
 
+Trust a list of manager signatures (KSUN, pershoot, KOWSU, MamboSU,
+Ksu, SukiSU, BakaSU/ReSukiSU) and allow up to two verified managers
+to be crowned at the same time.
+
+- manager_identity.h: two manager slots, owner-only by default
+  (KSU_MANAGER_ALL_USERS=1 to allow every user), is_manager() rejects
+  kernel threads and euid != uid
+- throne_tracker.c: keep scanning after the first manager is found,
+  drop uninstalled managers, rescan when a new package appears
+- allowlist.c: skip umount for every crowned manager
+- Kbuild: extended signature list, do not pin KSU_MANAGER_PACKAGE
+---
+ kernel/Kbuild                     |  14 ++-
+ kernel/manager/manager_identity.h | 136 +++++++++++++++++++++++++++---
+ kernel/manager/throne_tracker.c   |  65 +++++++++++++-
+ kernel/policy/allowlist.c         |   2 +-
+ 4 files changed, 200 insertions(+), 17 deletions(-)
+ 
 diff --git a/kernel/Kbuild b/kernel/Kbuild
 index 9f0e6db..0dfdf01 100644
 --- a/kernel/Kbuild
