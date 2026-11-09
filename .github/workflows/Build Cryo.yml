@@ -908,7 +908,7 @@ jobs:
               SETUP_BRANCH=main
               DEFAULT_REF=main
               NEED_SUSFS_PATCH=1
-              EXTRA_PATCH_URL="OFFICIAL_MULTI_PATCH"
+              EXTRA_PATCH_URL="$OFFICIAL_MULTI_PATCH"
               ;;
             *)
               die "Fatal Error: Varian manager tidak dikenal: $KSU_MANAGER"
