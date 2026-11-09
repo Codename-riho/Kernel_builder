@@ -1,3 +1,8 @@
+From: Dyatz <Codename-riho@github.com>
+Date: Mon, 9 Nov 2026 15:00:00 +0700
+Subject: [PATCH] kernel: add multi-manager support (2 slot, dynamic crown)
+---
+
 diff --git a/kernel/Kbuild b/kernel/Kbuild
 index 9f0e6db..0dfdf01 100644
 --- a/kernel/Kbuild
