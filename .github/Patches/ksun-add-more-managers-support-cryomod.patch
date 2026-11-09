@@ -1,7 +1,7 @@
 diff --git a/kernel/Kbuild b/kernel/Kbuild
 --- a/kernel/Kbuild
 +++ b/kernel/Kbuild
-@@ -211,8 +211,8 @@ KSU_NEW_DCACHE_FLUSH := $(shell grep -q __flush_dcache_area $(srctree)/arch/arm6
+@@ -211,8 +211,11 @@ KSU_NEW_DCACHE_FLUSH := ... $(shell grep -q __flush_dcache_area $(srctree)/arch/arm6
  $(info -- KernelSU-Next new DCACHE flush: $(KSU_NEW_DCACHE_FLUSH))
  
  ifndef KSU_NEXT_MANAGER_LIST
