@@ -1,3 +1,24 @@
+From af11e77ccb7e1c4e518f70093560683451aede93 Mon Sep 17 00:00:00 2001
+From: Dyatz <Codename-riho@github.com>
+Date: Mon, 9 Nov 2026 15:17:00 +0700
+Subject: [PATCH] kernel: add multi-manager support (signature list)
+
+Accept any app whose signing certificate matches an entry of
+KSU_MANAGER_LIST ("<hex size>:<sha256>,...") as the manager instead of
+a single pinned package name.
+
+- Kbuild: KSU_MANAGER_LIST with the trusted signatures
+- apk_sign.c: read the APK signing certificate and hash it once, then
+  match that single hash against the whole signature list instead of
+  reopening/re-hashing the APK for every entry
+- throne_tracker.c: any package may be a manager, the signature
+  decides; remember the crowned package and rescan when it is gone
+---
+ kernel/Kbuild                   |    5 +
+ kernel/manager/apk_sign.c       |  163 ++++++++++++++++++++++++++++++++++-----
+ kernel/manager/throne_tracker.c |   73 +++++++----------
+ 3 files changed, 177 insertions(+), 64 deletions(-)
+
 diff --git a/kernel/Kbuild b/kernel/Kbuild
 index 19fa298..c39604c 100644
 --- a/kernel/Kbuild
