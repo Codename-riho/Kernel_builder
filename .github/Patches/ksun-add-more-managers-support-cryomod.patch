@@ -1,0 +1,325 @@
+diff --git a/kernel/Kbuild b/kernel/Kbuild
+index 9f0e6db..0dfdf01 100644
+--- a/kernel/Kbuild
++++ b/kernel/Kbuild
+@@ -211,10 +211,20 @@ KSU_NEW_DCACHE_FLUSH := $(shell grep -q __flush_dcache_area $(srctree)/arch/arm6
+ $(info -- KernelSU-Next new DCACHE flush: $(KSU_NEW_DCACHE_FLUSH))
+ 
+ ifndef KSU_NEXT_MANAGER_LIST
+-# KSUN, pershoot
+-KSU_NEXT_MANAGER_LIST := 0x3e6:79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7,0x338:f26471a28031130362bce7eebffb9a0b8afc3095f163ce0c75a309f03b644a1f
++# KSUN, pershoot, KOWSU, MamboSU, Ksu, SukiSU, BakaSU/ReSukiSU
++KSU_NEXT_MANAGER_LIST := 0x3e6:79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7,0x338:f26471a28031130362bce7eebffb9a0b8afc3095f163ce0c75a309f03b644a1f,0x375:484fcba6e6c43b1fb09700633bf2fb4758f13cb0b2f4457b80d075084b26c588,0x384:a9462b8b98ea1ca7901b0cbdcebfaa35f0aa95e51b01d66e6b6d2c81b97746d8,0x033b:c371061b19d8c7d7d6133c6a9bafe198fa944e50c1b31c9d8daa8d7f1fc2d2d6,0x35c:947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef,0x377:d3469712b6214462764a1d8d3e5cbe1d6819a0b629791b9f4101867821f1df64
+ endif
+ 
++# Multi-manager: semua signature di atas dipercaya, tetapi paling banyak 2 manager aktif bersamaan.
++# Secara default hanya owner (user 0) yang boleh memakai manager; set KSU_MANAGER_ALL_USERS=1 untuk semua user.
++ifdef KSU_MANAGER_ALL_USERS
++ccflags-y += -DKSU_MANAGER_ALL_USERS=1
++$(info -- KernelSU-Next Manager: accepted from all users)
++endif
++
++# manager spoofed memakai package name acak: jangan pin package, scan semua APK
++override undefine KSU_MANAGER_PACKAGE
++
+ ifdef KSU_MANAGER_PACKAGE
+ ccflags-y += -DKSU_MANAGER_PACKAGE=\"$(KSU_MANAGER_PACKAGE)\"
+ $(info -- KernelSU-Next Manager package name: $(KSU_MANAGER_PACKAGE))
+diff --git a/kernel/manager/manager_identity.h b/kernel/manager/manager_identity.h
+index 1268f44..e833586 100644
+--- a/kernel/manager/manager_identity.h
++++ b/kernel/manager/manager_identity.h
+@@ -1,11 +1,20 @@
+ #ifndef __KSU_H_MANAGER_IDENTITY
+ #define __KSU_H_MANAGER_IDENTITY
+ 
++#include <linux/compiler.h>
+ #include <linux/cred.h>
++#include <linux/sched.h>
+ #include <linux/types.h>
+ 
+ #define KSU_INVALID_APPID -1
+ #define KSU_PER_USER_RANGE 100000
++// Multi-manager: at most KSU_MAX_MANAGERS verified managers are active at once.
++// Every manager has full root control, so the limit is kept at 2.
++#define KSU_MAX_MANAGERS 2
++
++// Only real app UIDs can be crowned (FIRST_APPLICATION_UID..LAST_APPLICATION_UID)
++#define KSU_FIRST_APP_APPID 10000
++#define KSU_LAST_APP_APPID 19999
+ 
+ #ifdef CONFIG_KSU_DISABLE_MANAGER
+ static inline bool ksu_is_manager_appid_valid()
+@@ -36,37 +45,144 @@ static inline void ksu_set_manager_appid(uid_t appid)
+ static inline void ksu_invalidate_manager_uid()
+ {
+ }
++
++static inline bool ksu_add_manager_appid(uid_t appid)
++{
++    (void)appid;
++    return true;
++}
++
++static inline void ksu_remove_manager_appid(uid_t appid)
++{
++    (void)appid;
++}
++
++static inline uid_t ksu_manager_appid_at(int idx)
++{
++    (void)idx;
++    return KSU_INVALID_APPID;
++}
++
++static inline int ksu_manager_appid_count(void)
++{
++    return 1;
++}
+ #else
+-extern uid_t ksu_manager_appid; // DO NOT DIRECT USE
++// Slots are only written under throne_tracker_mutex; readers are lockless.
++extern uid_t ksu_manager_appids[KSU_MAX_MANAGERS]; // DO NOT DIRECT USE
+ 
+-static inline bool ksu_is_manager_appid_valid()
++static inline uid_t ksu_manager_appid_at(int idx)
+ {
+-    return ksu_manager_appid != KSU_INVALID_APPID;
++    return READ_ONCE(ksu_manager_appids[idx]);
+ }
+ 
+-static inline bool is_manager()
++static inline int ksu_manager_appid_count(void)
+ {
+-    return unlikely(ksu_manager_appid == current_uid().val % KSU_PER_USER_RANGE);
++    int i, n = 0;
++
++    for (i = 0; i < KSU_MAX_MANAGERS; i++) {
++        if (ksu_manager_appid_at(i) != KSU_INVALID_APPID)
++            n++;
++    }
++    return n;
++}
++
++static inline bool ksu_is_manager_appid_valid()
++{
++    return ksu_manager_appid_count() > 0;
+ }
+ 
+ static inline bool is_uid_manager(uid_t uid)
+ {
+-    return unlikely(ksu_manager_appid == uid % KSU_PER_USER_RANGE);
++    int i;
++
++#ifndef KSU_MANAGER_ALL_USERS
++    // Only the owner (user 0) counts: copies of a manager in secondary
++    // users / dual apps are not accepted
++    if (uid / KSU_PER_USER_RANGE != 0)
++        return false;
++#endif
++    for (i = 0; i < KSU_MAX_MANAGERS; i++) {
++        uid_t appid = ksu_manager_appid_at(i);
++
++        if (appid != KSU_INVALID_APPID && appid == uid % KSU_PER_USER_RANGE)
++            return true;
++    }
++    return false;
++}
++
++// Driver call protection: every manager-only driver call goes through here.
++// Besides the uid match, the caller must be a plain app process: no kernel
++// thread and no uid switching (euid must equal uid).
++static inline bool is_manager()
++{
++    uid_t uid = current_uid().val;
++
++    if (!is_uid_manager(uid))
++        return false;
++    return !(current->flags & PF_KTHREAD) && current_euid().val == uid;
+ }
+ 
++// First crowned manager (kept for callers that only know about one manager)
+ static inline uid_t ksu_get_manager_appid()
+ {
+-    return ksu_manager_appid;
++    int i;
++
++    for (i = 0; i < KSU_MAX_MANAGERS; i++) {
++        uid_t appid = ksu_manager_appid_at(i);
++
++        if (appid != KSU_INVALID_APPID)
++            return appid;
++    }
++    return KSU_INVALID_APPID;
+ }
+ 
+-static inline void ksu_set_manager_appid(uid_t appid)
++// Crown one more manager. Returns false when all slots are taken or appid is not an app uid.
++static inline bool ksu_add_manager_appid(uid_t appid)
+ {
+-    ksu_manager_appid = appid;
++    int i, free_slot = -1;
++
++    if (appid < KSU_FIRST_APP_APPID || appid > KSU_LAST_APP_APPID)
++        return false; // not an app uid (system/shared/isolated uids are never managers)
++
++    for (i = 0; i < KSU_MAX_MANAGERS; i++) {
++        uid_t cur = ksu_manager_appid_at(i);
++
++        if (cur == appid)
++            return true; // already crowned
++        if (cur == KSU_INVALID_APPID && free_slot < 0)
++            free_slot = i;
++    }
++    if (free_slot < 0)
++        return false;
++    WRITE_ONCE(ksu_manager_appids[free_slot], appid);
++    return true;
++}
++
++static inline void ksu_remove_manager_appid(uid_t appid)
++{
++    int i;
++
++    for (i = 0; i < KSU_MAX_MANAGERS; i++) {
++        if (ksu_manager_appid_at(i) == appid)
++            WRITE_ONCE(ksu_manager_appids[i], KSU_INVALID_APPID);
++    }
+ }
+ 
+ static inline void ksu_invalidate_manager_uid()
+ {
+-    ksu_manager_appid = KSU_INVALID_APPID;
++    int i;
++
++    for (i = 0; i < KSU_MAX_MANAGERS; i++)
++        WRITE_ONCE(ksu_manager_appids[i], KSU_INVALID_APPID);
++}
++
++// Old single-manager semantic: replace every crowned manager with this one
++static inline void ksu_set_manager_appid(uid_t appid)
++{
++    ksu_invalidate_manager_uid();
++    if (appid != KSU_INVALID_APPID)
++        ksu_add_manager_appid(appid);
+ }
+ #endif
+ 
+diff --git a/kernel/manager/throne_tracker.c b/kernel/manager/throne_tracker.c
+index 9e19988..603c27f 100644
+--- a/kernel/manager/throne_tracker.c
++++ b/kernel/manager/throne_tracker.c
+@@ -27,7 +27,14 @@
+ 
+ static DEFINE_MUTEX(throne_tracker_mutex);
+ 
+-uid_t ksu_manager_appid = KSU_INVALID_APPID;
++#ifndef CONFIG_KSU_DISABLE_MANAGER
++uid_t ksu_manager_appids[KSU_MAX_MANAGERS] = { [0 ... KSU_MAX_MANAGERS - 1] = KSU_INVALID_APPID };
++#endif
++
++#ifndef KSU_MANAGER_PACKAGE
++// number of packages seen by the last track_throne() run, used to decide when to rescan
++static size_t last_pkg_count;
++#endif
+ 
+ #define DATA_PATH_LEN 384 // 384 is enough for /data/app/<package>/base.apk
+ 
+@@ -70,7 +77,8 @@ static void crown_manager(const char *apk, struct list_head *uid_data)
+ 	list_for_each_entry (np, list, list) {
+ 		if (strncmp(np->package, target_pkg, KSU_MAX_PACKAGE_NAME) == 0) {
+ 			pr_info("Crowning manager: %s(uid=%d)\n", target_pkg, np->uid);
+-			ksu_set_manager_appid(np->uid);
++			if (!ksu_add_manager_appid(np->uid))
++				pr_warn("cannot crown %s: no free manager slot or not an app uid\n", target_pkg);
+ 			break;
+ 		}
+ 	}
+@@ -237,9 +245,11 @@ static void search_manager(const char *path, int depth, struct list_head *uid_da
+ 			if (unlikely(!is_manager))
+ 				goto skip_iterate;
+ 
+-			// Verified manager found, halt outer loop
+-			stop = 1;
++			// Verified manager found: crown it, but keep scanning so that
++			// every other verified manager gets crowned too
+ 			crown_manager(candidate_path, uid_data);
++			if (ksu_manager_appid_count() >= KSU_MAX_MANAGERS)
++				stop = 1;
+ 
+ 		skip_iterate:
+ 			list_del(&pos->list);
+@@ -346,6 +356,7 @@ static void track_throne_function(bool prune_only)
+ 	if (prune_only)
+ 		goto prune;
+ 
++#ifdef KSU_MANAGER_PACKAGE
+ 	// first, check if manager_uid exist!
+ 	uid_t manager_package_uid = KSU_INVALID_APPID;
+ 	bool need_rescan = false;
+@@ -412,6 +423,52 @@ static void track_throne_function(bool prune_only)
+ 		pr_info("Search manager finished\n");
+ 	}
+ 
++#else
++	// Multi-manager: several verified managers can be crowned at once.
++	// first, drop crowned managers whose package no longer exists
++	bool need_rescan = false;
++	size_t pkg_count = 0;
++	int i;
++
++	list_for_each_entry (np, &uid_list, list)
++		pkg_count++;
++
++	for (i = 0; i < KSU_MAX_MANAGERS; i++) {
++		uid_t appid = ksu_manager_appid_at(i);
++		bool found = false;
++
++		if (appid == KSU_INVALID_APPID)
++			continue;
++		list_for_each_entry (np, &uid_list, list) {
++			if (np->uid == appid) {
++				found = true;
++				break;
++			}
++		}
++		if (!found) {
++			pr_info("manager uid %u is uninstalled, invalidate it!\n", appid);
++			ksu_remove_manager_appid(appid);
++		}
++	}
++
++	if (!ksu_is_manager_appid_valid()) {
++		// nothing crowned: look for a manager
++		need_rescan = true;
++	} else if (ksu_manager_appid_count() < KSU_MAX_MANAGERS && pkg_count > last_pkg_count) {
++		// a new package appeared and there is a free slot: it may be another manager
++		need_rescan = true;
++	} else {
++		pr_info("managers unchanged, skip search!\n");
++	}
++	last_pkg_count = pkg_count;
++
++	if (need_rescan) {
++		pr_info("Searching managers...\n");
++		search_manager("/data/app", 2, &uid_list);
++		pr_info("Search manager finished\n");
++	}
++#endif
++
+ prune:
+ 	// then prune the allowlist
+ 	ksu_prune_allowlist(is_uid_exist, &uid_list);
+diff --git a/kernel/policy/allowlist.c b/kernel/policy/allowlist.c
+index c54bcf7..6c62ffd 100644
+--- a/kernel/policy/allowlist.c
++++ b/kernel/policy/allowlist.c
+@@ -295,7 +295,7 @@ bool ksu_uid_should_umount(uid_t uid)
+     struct app_profile *profile;
+     bool res;
+ #ifndef CONFIG_KSU_SUSFS
+-    if (likely(ksu_is_manager_appid_valid()) && unlikely(ksu_get_manager_appid() == uid % PER_USER_RANGE)) {
++    if (likely(ksu_is_manager_appid_valid()) && unlikely(is_uid_manager(uid))) {
+         // we should not umount on manager!
+         return false;
+     }
