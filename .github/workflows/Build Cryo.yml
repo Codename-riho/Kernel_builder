@@ -12,6 +12,10 @@ permissions:
   contents: write
   actions: read
 
+concurrency:
+  group: cryo-build-${{ github.ref }}
+  cancel-in-progress: true
+
 on: 
   schedule:
     - cron: "0 17 * * 5"
@@ -79,6 +83,7 @@ jobs:
   build-kernels:
     name: "❄️ Build Cryo ${{ matrix.kernel.name }} kernel"
     runs-on: ubuntu-26.04
+    timeout-minutes: 300
     strategy:
       fail-fast: false
       matrix:
@@ -194,7 +199,7 @@ jobs:
             sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Dpkg::Use-Pty=0 \
               repo rsync aria2 bc bison libxml2-16 libxml2-dev libxml2-utils \
               build-essential ca-certificates clang cpio curl dwarves flex gcc-aarch64-linux-gnu git \
-              libdw-dev libelf-dev libssl-dev lld llvm llvm-dev pkg-config python3 unzip xz-utils zip
+              libdw-dev libelf-dev libssl-dev lld llvm llvm-dev pkg-config python3 unzip xz-utils zip zstd
           } >"$APT_LOG" 2>&1; then
             echo "❌ Instalasi dependensi gagal. Log lengkap:"
             cat "$APT_LOG"
@@ -209,7 +214,7 @@ jobs:
           echo "💾 Disk sesudah setup: $(df -h / | awk 'NR==2{print $4" bebas dari "$2" ("$5" terpakai)"}')"
           
       - name: 🚧 Setup SWAP 24GB
-        uses: pierotofy/set-swap-space@master
+        uses: pierotofy/set-swap-space@fc79b3f67fa8a838184ce84a674ca12238d2c761 # pinned (dulu @master)
         with:
             swap-size-gb: 24
 
@@ -221,16 +226,23 @@ jobs:
       - name: "🎭 Clone kernel source"
         working-directory: ./${{ env.KERNEL_LOC_DIR }}
         run: |
+          set -euo pipefail
           # Atur buffer git untuk mencegah early EOF
           git config --global http.postBuffer 524288000
 
-           # Retry loop untuk clone (mencegah error putus koneksi sesaat)
-          for i in {1..3}; do
-            git clone --recursive --branch ${{ env.KERNEL_BRANCH }} \
-              ${{ env.KERNEL_REPO }} ${{ env.KERNEL_NAME }} --depth=1 && break || {
-              echo "⚠️ Clone gagal, mencoba ulang ($i/3)..."
-              sleep 5
-            }
+          # Retry loop untuk clone (mencegah error putus koneksi sesaat)
+          for i in 1 2 3; do
+            rm -rf "$KERNEL_NAME"
+            if git clone --recursive --branch "$KERNEL_BRANCH" \
+              "$KERNEL_REPO" "$KERNEL_NAME" --depth=1; then
+              break
+            fi
+            echo "⚠️ Clone gagal, mencoba ulang ($i/3)..."
+            sleep 5
+            if [ "$i" -eq 3 ]; then
+              echo "::error::Clone kernel gagal setelah 3 percobaan"
+              exit 1
+            fi
           done
           
       - name: "🧰 Setup toolchain"
@@ -465,23 +477,6 @@ jobs:
             done
           fi
 
-      - name: "😎 Set args for GKI kernels"
-        if: ${{ env.TOOLCHAIN_TYPE == 'custom-tools' }}
-        id: generate-args
-        working-directory: ./${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
-        run: |
-            args="-j$(nproc --all)"
-            if [ -n "${{ env.OUT_DIR }}" ]; then
-              mkdir -p $(pwd)/${{ env.OUT_DIR }}
-              args="$args O=$(pwd)/${{ env.OUT_DIR }}"
-            fi
-            args="$args ARCH=arm64 LLVM=1 LTO=full"
-            args="$args CROSS_COMPILE=aarch64-linux-gnu-"
-            args="$args CLANG_TRIPLE=aarch64-linux-gnu-"
-            args="$args AR=llvm-ar"
-            args="$args CC=clang"
-            echo "args=$args" >> $GITHUB_OUTPUT
-            
       - name: "🧩 Configure kernel & patches"
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         run: |
@@ -1979,6 +1974,7 @@ jobs:
         env:
           KSU_MANAGER: ${{ inputs.ksu_manager || 'BakaSU' }}
           ENABLE_KSU: ${{ matrix.kernel.enable_ksu }}
+          SUSFS_SUPPORT: ${{ env.SUSFS_SUPPORT }}
           VARIANT_NAME: ${{ matrix.kernel.name }}
           PYTHONWARNINGS: ignore::SyntaxWarning
         run: |
@@ -2002,6 +1998,7 @@ jobs:
           if [ "$ENABLE_KSU" = "true" ]; then
             CHECK_LIST="$CHECK_LIST CONFIG_KSU"
             [ "${KSU_MANAGER:-}" = "SukiSU-Ultra+KPM" ] && CHECK_LIST="$CHECK_LIST CONFIG_KPM"
+            [ "${SUSFS_SUPPORT:-}" = "true" ] && CHECK_LIST="$CHECK_LIST CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER"
           fi
           ENABLED=" $({ grep -E '^CONFIG_[A-Za-z0-9_]+=y$' "$CONFIG_OUT" || true; } | cut -d= -f1 | tr '\n' ' ') "
 
@@ -2034,7 +2031,7 @@ jobs:
           make ARCH=arm64 LLVM=1 O=out olddefconfig
 
           # Pastikan config penting tidak hilang setelah resolusi dependensi
-          CHECK_LIST="CONFIG_LTO_CLANG_FULL CONFIG_TCP_CONG_BBR3 CONFIG_ZRAM_DEF_COMP_LZ4 CONFIG_CRYPTO_LZO"
+          CHECK_LIST="CONFIG_LTO_CLANG_FULL CONFIG_TCP_CONG_BBR3 CONFIG_ZRAM_DEF_COMP_LZ4 CONFIG_CRYPTO_LZO CONFIG_DEBUG_INFO_BTF"
           if [ "$ENABLE_KSU" = "true" ]; then
             CHECK_LIST="$CHECK_LIST CONFIG_KSU"
             [ "${KSU_MANAGER:-}" = "SukiSU-Ultra+KPM" ] && CHECK_LIST="$CHECK_LIST CONFIG_KPM"
@@ -2079,6 +2076,7 @@ jobs:
           path: |
             ${{ env.WORK_DIR }}/build_full.log
             ${{ env.WORK_DIR }}/out/.config
+            ${{ env.WORK_DIR }}/${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}/out/.config
             ${{ env.WORK_DIR }}/${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}/*.rej
           retention-days: 3
           if-no-files-found: ignore
@@ -2091,7 +2089,6 @@ jobs:
           path: |
             ${{ env.WORK_DIR }}/config_check.txt
             ${{ env.WORK_DIR }}/ksu_info.txt
-            ${{ env.WORK_DIR }}/deepsleep_info.txt
           retention-days: 1
           if-no-files-found: ignore
           
@@ -2128,8 +2125,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.kernel.name }}-kernel
-          path: ${{ env.WORK_DIR }}/out/dist/${{ env.OUTPUT_NAME }}
-          retention-days: 1
+          path: |
+            ${{ env.WORK_DIR }}/out/dist/${{ env.OUTPUT_NAME }}
+            ${{ env.WORK_DIR }}/out/dist/build_tools.txt
+          retention-days: 3
 
       - name: 🔍 Check Space (Post-Build)
         if: always() # Run even if build fails to debug space issues
@@ -2140,6 +2139,7 @@ jobs:
   package-kernels:
     name: "📦 Package Kernels"
     runs-on: ubuntu-26.04
+    timeout-minutes: 30
     needs: [build-kernels]
     if: ${{ !cancelled() }}
     permissions:
@@ -2159,7 +2159,6 @@ jobs:
             | sed 's/-kernel$//' | sort | paste -sd, - | sed 's/,/, /g')
           CHECKS=$(find ./artifacts -type f -name config_check.txt 2>/dev/null | sort)
           KSU_INFOS=$(find ./artifacts -type f -name ksu_info.txt 2>/dev/null | sort)
-          DS_INFOS=$(find ./artifacts -type f -name deepsleep_info.txt 2>/dev/null | sort)
           {
             # ── 1. Cek .config akhir ──────────────────────────────────────────
             echo "### 🧩 Kernel Configuration"
@@ -2295,6 +2294,7 @@ jobs:
         if: needs.build-kernels.result == 'success'
         uses: actions/upload-artifact@v7
         with:
+          name: CryoKernel-AK3-${{ github.run_number }}
           path: ${{ env.ZIP_NAME }}
           archive: false
           retention-days: 30
