@@ -2208,6 +2208,7 @@ jobs:
       
       - name: "📦 Create release package"
         if: needs.build-kernels.result == 'success'
+        id: package
         run: |
           set -e
 
@@ -2282,19 +2283,21 @@ jobs:
           EOF
           
           # Create ZIP
-          ZIP_NAME="CryoKernel_AK3-$(TZ=Asia/Jakarta date +'%Y-%m-%d').zip"
+          DATE_WIB=$(TZ=Asia/Jakarta date +'%Y-%m-%d')
+          ZIP_NAME="CryoKernel_AK3-${DATE_WIB}.zip"
           cd AnyKernel3
           zip -r9 "../$ZIP_NAME" * -x .git/*
           cd ..
           
           echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+          echo "date_wib=$DATE_WIB" >> "$GITHUB_OUTPUT"
           echo "✅ Package created: $ZIP_NAME"
           
       - name: "📤 Upload kernel ZIP artifact"
         if: needs.build-kernels.result == 'success'
         uses: actions/upload-artifact@v7
         with:
-          name: CryoKernel-AK3-${{ github.run_number }}
+          name: CryoKernel-AK3-${{ steps.package.outputs.date_wib }}
           path: ${{ env.ZIP_NAME }}
           archive: false
           retention-days: 30
