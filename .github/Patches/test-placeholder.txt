@@ -1,0 +1,9 @@
+# Test Placeholder
+
+Ini file uji untuk memastikan push ke GitHub berjalan.
+
+- Repo   : Codename-riho/Kernel_builder
+- Branch : Builders
+- Dibuat : 2026-11-10
+
+<PLACEHOLDER>
