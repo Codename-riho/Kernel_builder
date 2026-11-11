@@ -1713,6 +1713,7 @@ jobs:
           #ifndef _LINUX_VINTF_SPOOF_H
           #define _LINUX_VINTF_SPOOF_H
 
+          #include <linux/cred.h>
           #include <linux/types.h>
 
           struct new_utsname;
@@ -1765,6 +1766,20 @@ jobs:
           }
           #endif
 
+          /*
+           * Nama proses (comm) bisa diganti aplikasi mana pun lewat prctl(PR_SET_NAME)
+           * atau /proc/self/comm, jadi nama saja tidak boleh jadi dasar kepercayaan.
+           * Hanya pemanggil dengan uid DAN euid root (0) atau system (1000) yang
+           * boleh dianggap pemanggil VINTF.
+           */
+          static bool vintf_caller_trusted(void)
+          {
+              uid_t uid = __kuid_val(current_uid());
+              uid_t euid = __kuid_val(current_euid());
+
+              return (uid == 0 || uid == 1000) && (euid == 0 || euid == 1000);
+          }
+
           bool vintf_spoof_wanted(void)
           {
               static const char * const keep[] = { @KEEP@ };
@@ -1774,10 +1789,12 @@ jobs:
 
               /* nama proses utama, bukan nama thread */
               get_task_comm(pname, current->group_leader);
-              for (i = 0; i < ARRAY_SIZE(keep); i++) {
-                  if (!strcmp(pname, keep[i])) {
-                      spoof = false;
-                      break;
+              if (vintf_caller_trusted()) {
+                  for (i = 0; i < ARRAY_SIZE(keep); i++) {
+                      if (!strcmp(pname, keep[i])) {
+                          spoof = false;
+                          break;
+                      }
                   }
               }
           #if VINTF_SPOOF_DEBUG
