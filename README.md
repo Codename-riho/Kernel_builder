@@ -27,7 +27,6 @@ Kernel_builder is the build system behind **Cryo Kernel**. Everything runs on Gi
 - **KernelSU-Next** with a custom **multi-manager patch** (see below)
 - **SUSFS** integration through susfs4ksu
 - **AnyKernel3** packaging with a Cryo installer banner
-- **boot.img extraction**: unpack a `boot.img`, pull out `Image` and the kernel config, and repackage them as AnyKernel3
 - Toolchain based on `android-tools` (`build/build.sh`)
 
 ## ⚙️ Workflows
@@ -37,8 +36,9 @@ Workflows live in [`.github/workflows`](.github/workflows):
 | Workflow | Purpose |
 | --- | --- |
 | `Build Cryo.yml` | Main kernel build: GKI / CLO × KSU / No-KSU matrix |
-| `Build_Cryo_Alpine_.yml` | Build variant that runs on an Alpine environment |
-| Boot extraction workflow | Extract the kernel from a `boot.img` (Google Drive URL/ID or a path in the repo) and package it as AnyKernel3 |
+| `Analyze susfs.yml` | Compare pinned vs latest SUSFS commits for GKI / CLO |
+| `Mirror-SUSFS.yml` | Scheduled mirror sync of susfs4ksu into this repo |
+| `Upstream_kernel_source.yml` | Sync upstream kernel source (merge / mirror / fresh) |
 
 > Workflow file names can change over time. The **Actions** tab always shows the current list.
 

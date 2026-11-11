@@ -27,7 +27,6 @@ Kernel_builder adalah sistem build di balik **Cryo Kernel**. Semuanya berjalan d
 - **KernelSU-Next** dengan **patch multi-manager** buatan sendiri (lihat di bawah)
 - Integrasi **SUSFS** lewat susfs4ksu
 - Pengemasan **AnyKernel3** dengan banner installer Cryo
-- **Ekstraksi boot.img**: unpack `boot.img`, ambil `Image` dan config kernel, lalu kemas ulang sebagai AnyKernel3
 - Toolchain berbasis `android-tools` (`build/build.sh`)
 
 ## ⚙️ Workflow
@@ -37,8 +36,9 @@ Workflow berada di [`.github/workflows`](.github/workflows):
 | Workflow | Fungsi |
 | --- | --- |
 | `Build Cryo.yml` | Build kernel utama: matriks GKI / CLO × KSU / Tanpa KSU |
-| `Build_Cryo_Alpine_.yml` | Varian build yang berjalan di lingkungan Alpine |
-| Workflow ekstraksi boot | Mengekstrak kernel dari `boot.img` (URL/ID Google Drive atau path di repo) lalu mengemasnya sebagai AnyKernel3 |
+| `Analyze susfs.yml` | Membandingkan commit SUSFS pinned vs terbaru untuk GKI / CLO |
+| `Mirror-SUSFS.yml` | Sinkronisasi mirror susfs4ksu ke repo ini (terjadwal) |
+| `Upstream_kernel_source.yml` | Sinkronisasi source kernel upstream (merge / mirror / fresh) |
 
 > Nama file workflow bisa berubah. Tab **Actions** selalu menampilkan daftar terbaru.
 
