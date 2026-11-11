@@ -72,9 +72,9 @@ Released under the [GNU General Public License v3.0](LICENCE).
 
 ## 🙏 Credits
 
-- [KernelSU-Next](https://github.com/KernelSU-Next/KernelSU-Next) and the KernelSU project
-- [susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu)
-- [AnyKernel3](https://github.com/osm0sis/AnyKernel3)
+- [KernelSU-Next](https://github.com/KernelSU-Next/KernelSU-Next) and the KernelSU project, which also has a great many variants
+- [susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu)  SUSFS feature 
+- [AnyKernel3](https://github.com/osm0sis/AnyKernel3) as a framework that enables this kernel to be flashed optimally
 - Banner artwork belongs to its original owner.
 - [yougotme101](https://github.com/yougotme101/kernel_msm-5.15) For the incredibly solid MSM-5.15 base tree and the workflow framework
 - [topnotchfreaks](https://github.com/topnotchfreaks/kernel_msm-5.15) For the brilliant Codelinaro (CLO) branch synchronization and the essential patches that push this kernel's performance to its absolute peak.
