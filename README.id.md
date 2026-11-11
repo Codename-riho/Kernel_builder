@@ -72,7 +72,9 @@ Dirilis di bawah [GNU General Public License v3.0](LICENCE).
 
 ## 🙏 Kredit
 
-- [KernelSU-Next](https://github.com/KernelSU-Next/KernelSU-Next) dan proyek KernelSU
-- [susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu)
-- [AnyKernel3](https://github.com/osm0sis/AnyKernel3)
-- Gambar banner milik pemilik aslinya.
+- [KernelSU-Next](https://github.com/KernelSU-Next/KernelSU-Next) dan proyek KernelSU, yang juga memiliki banyak sekali varian
+- [susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu) Fitur SUSFS
+- [AnyKernel3](https://github.com/osm0sis/AnyKernel3) sebagai kerangka kerja yang memungkinkan kernel ini di-flash secara optimal
+- Karya seni spanduk (banner) adalah milik pemilik aslinya.
+- [yougotme101](https://github.com/yougotme101/kernel_msm-5.15) Untuk pohon dasar MSM-5.15 yang luar biasa solid dan kerangka kerja alurnya
+- [topnotchfreaks](https://github.com/topnotchfreaks/kernel_msm-5.15) Untuk sinkronisasi cabang Codelinaro (CLO) yang brilian dan tambalan esensial yang mendorong performa kernel ini ke puncak maksimalnya.
