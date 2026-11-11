@@ -76,3 +76,6 @@ Released under the [GNU General Public License v3.0](LICENCE).
 - [susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu)
 - [AnyKernel3](https://github.com/osm0sis/AnyKernel3)
 - Banner artwork belongs to its original owner.
+- [yougotme101](https://github.com/yougotme101/kernel_msm-5.15) For the incredibly solid MSM-5.15 base tree and the workflow framework
+- [topnotchfreaks](https://github.com/topnotchfreaks/kernel_msm-5.15) For the brilliant Codelinaro (CLO) branch synchronization and the essential patches that push this kernel's performance to its absolute peak.
+
