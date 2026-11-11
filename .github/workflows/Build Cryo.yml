@@ -21,6 +21,14 @@ on:
     - cron: "0 17 * * 5"
   workflow_dispatch:
      inputs:
+      kernel_variant:
+        description: "Varian kernel yang dibuild (ksu = hanya KSU, noksu = hanya NoKSU, both = keduanya)"
+        type: choice
+        options:
+          - both
+          - ksu
+          - noksu
+        default: "both"
       ksu_manager:
         description: "Root manager untuk varian KSU"
         type: choice
@@ -144,6 +152,14 @@ jobs:
               - "https://raw.githubusercontent.com/Codename-riho/Kernel_builder/refs/heads/Builders/.github/Patches/0001-scripts-sign-builds.patch"
               - "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/main/0001-scripts-Don-t-append-and-dirty-to-localversion.patch"
               - "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/main/0001-scripts-do-not-ship-full-auto_localversion.patch"
+        # Filter matrix sesuai input kernel_variant:
+        #   ksu   → hanya varian KSU   (GKI, CLO)
+        #   noksu → hanya varian NoKSU (GKI-NoKSU, CLO-NoKSU)
+        #   both  (default & schedule) → semua matrix berjalan seperti biasa
+        exclude: >-
+          ${{ inputs.kernel_variant == 'noksu' && fromJSON('[{"kernel":{"enable_ksu":true}}]')
+          || inputs.kernel_variant == 'ksu' && fromJSON('[{"kernel":{"enable_ksu":false}}]')
+          || fromJSON('[]') }}
     env:
       KERNEL_LOC_DIR: ${{ matrix.kernel.dir }}
       KERNEL_NAME: ${{ matrix.kernel.repo_name }}
@@ -155,6 +171,7 @@ jobs:
       WORK_DIR: ${{ github.workspace }}
       
       # default aman untuk schedule + manual run
+      KERNEL_VARIANT: "${{ inputs.kernel_variant || 'both' }}"   # ksu | noksu | both (bawaan)
       TOOLCHAIN_TYPE: "${{ inputs.toolchain_type || 'android-tools' }}"
       DROIDSPACES_SUPPORT: "${{ inputs.droidspaces_support && 'true' || 'false' }}"   # bawaan: mati
       SUSFS_SUPPORT: "${{ format('{0}', inputs.susfsSupport) == 'false' && 'false' || 'true' }}"   # bawaan: aktif
@@ -557,6 +574,7 @@ jobs:
             echo "🏜️📦 DROIDSPACES_SUPPORT=${DROIDSPACES_SUPPORT}"
             echo "ඞ SUSFS_SUPPORT=${SUSFS_SUPPORT}"
             echo "⚔️ KSU_MANAGER=${KSU_MANAGER}"
+            echo "🎯 KERNEL_VARIANT=${KERNEL_VARIANT}"
 
       - name: "🚄 Porting BBRv3 + PLB (cherry-pick)"
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
@@ -2312,6 +2330,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
           TELEGRAM_IMAGE_URL: ${{ secrets.TELEGRAM_IMAGE_URL }}
+          KERNEL_VARIANT: ${{ inputs.kernel_variant || 'both' }}
           KSU_MANAGER: ${{ inputs.ksu_manager || 'BakaSU' }}
           KSU_REF: ${{ inputs.ksu_ref }}
           SUSFS_SUPPORT: ${{ format('{0}', inputs.susfsSupport) == 'false' && 'false' || 'true' }}
@@ -2363,6 +2382,12 @@ jobs:
             else 
             DROIDSPACES_TEXT="Enabled Proper Working"; fi
 
+          case "$KERNEL_VARIANT" in
+            ksu)   VARIANT_TEXT="KSU saja (GKI + CLO)" ;;
+            noksu) VARIANT_TEXT="NoKSU saja (GKI + CLO)" ;;
+            *)     VARIANT_TEXT="KSU + NoKSU (semua varian)" ;;
+          esac
+
           MANAGER=$(printf '%s' "$KSU_MANAGER${KSU_REF:+ @ $KSU_REF}" | esc)
           
           KVER_SHOW="${KERNEL_VERSION}"
@@ -2394,6 +2419,7 @@ jobs:
           • LTO: <code>Full</code>
           • Tick Rate: <code>250 Hz</code>
           • Images: <code>${IMAGES}</code>
+          • Varian Build: <code>${VARIANT_TEXT}</code>
           • KSU Manager: <code>${MANAGER}</code>
           • SUSFS: <code>${SUSFS_TEXT}</code>
           • Droidspaces: <code>${DROIDSPACES_TEXT}</code>
@@ -2441,6 +2467,7 @@ jobs:
           • Device: <code>$(printf '%s' "$DEVICE_NAME" | esc)</code>
 
           <b>👾 Configuration:</b>
+          • Varian Build: <code>${VARIANT_TEXT}</code>
           • KSU Manager: <code>${MANAGER}</code>
           • SUSFS: <code>${SUSFS_TEXT}</code>
           • Droidspaces: <code>${DROIDSPACES_TEXT}</code>
