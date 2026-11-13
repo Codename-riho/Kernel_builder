@@ -71,6 +71,11 @@ on:
         required: false
         type: string
         default: "" 
+      ds28e16_module:
+        description: "Bangun modul ds28e16 (batt-ds28e16.ko) di luar source, eksperimental"
+        required: false
+        type: boolean
+        default: false
       kernelSpoofVersion:
         description: "Spoof versi kernel di uname -r (format: X.Y atau X.Y.Z, kosong = nonaktif)"
         required: false
@@ -113,7 +118,8 @@ jobs:
       # default aman untuk schedule + manual run
       KERNEL_VARIANT: "ksu-gki"   # workflow ini khusus GKI + KSU
       TOOLCHAIN_TYPE: "${{ inputs.toolchain_type || 'android-tools' }}"
-      DROIDSPACES_SUPPORT: "${{ inputs.droidspaces_support && 'true' || 'false' }}"   # bawaan: mati
+      DROIDSPACES_SUPPORT: "${{ inputs.droidspaces_support && 'true' || 'false' }}"
+      DS28E16_MODULE: "${{ inputs.ds28e16_module && 'true' || 'false' }}"   # bawaan: mati
       SUSFS_SUPPORT: "${{ format('{0}', inputs.susfsSupport) == 'false' && 'false' || 'true' }}"   # bawaan: aktif
       KSU_MANAGER: "${{ inputs.ksu_manager || 'BakaSU' }}"
       KSU_REF: "${{ inputs.ksu_ref || '' }}"
@@ -432,25 +438,6 @@ jobs:
               missing=$(ldd "$CLANG_PATH/$b" 2>/dev/null | grep "not found" || true)
               [ -z "$missing" ] || { echo "::error::Dependensi $b hilang: $missing"; exit 1; }
             done
-          fi
-
-      - name: "🔋 Apply ds28e16 halt-after-3-resets patch (opsional)"
-        working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
-        run: |
-          URL="https://raw.githubusercontent.com/Codename-riho/Kernel_builder/refs/heads/Builders/.github/Patches/ds28e16-halt-after-3-reset-failures.patch"
-          TARGET=$(find drivers/power/supply -name 'ds28e16.c' 2>/dev/null | head -n1)
-          if [ -z "$TARGET" ]; then
-            echo "::warning::ds28e16.c tidak ada di source ini (branch GKI tidak memilikinya), patch dilewati"
-            exit 0
-          fi
-          curl -fsSL --retry 3 -o /tmp/ds28e16.patch "$URL" || { echo "::warning::Gagal unduh patch ds28e16, dilewati"; exit 0; }
-          if patch -p1 -R --dry-run -s -f < /tmp/ds28e16.patch >/dev/null 2>&1; then
-            echo "✅ Sudah terpasang, dilewati"
-          elif patch -p1 --dry-run -s -f < /tmp/ds28e16.patch >/dev/null 2>&1; then
-            patch -p1 -s --batch --no-backup-if-mismatch < /tmp/ds28e16.patch
-            echo "✅ Patch ds28e16 terpasang pada $TARGET"
-          else
-            echo "::warning::Patch ds28e16 tidak cocok dengan $TARGET, dilewati"
           fi
 
       - name: "🧩 Configure kernel & patches"
@@ -2295,6 +2282,85 @@ jobs:
           retention-days: 1
           if-no-files-found: ignore
           
+      - name: "🔋 Stage driver ds28e16 (di luar source kernel)"
+        if: ${{ env.DS28E16_MODULE == 'true' }}
+        continue-on-error: true
+        working-directory: ${{ env.WORK_DIR }}
+        run: |
+          set -euo pipefail
+          EXT="$WORK_DIR/ds28e16_ext"
+          rm -rf "$EXT" /tmp/topaz_src && mkdir -p "$EXT/inc/linux" "$EXT/inc/dt-bindings/iio"
+
+          # Ambil driver + header dari source resmi Xiaomi topaz (sumber kernel tidak disentuh)
+          git clone -q --depth 1 --filter=blob:none --sparse -b topaz-t-oss \
+            https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git /tmp/topaz_src
+          git -C /tmp/topaz_src sparse-checkout set --no-cone \
+            drivers/power/supply/battery_secret include/linux/ipc_logging.h \
+            include/dt-bindings/iio/qti_power_supply_iio.h
+          SRC=/tmp/topaz_src/drivers/power/supply/battery_secret
+          cp "$SRC"/*.c "$SRC"/*.h "$EXT/"
+          cp /tmp/topaz_src/include/linux/ipc_logging.h "$EXT/inc/linux/"
+          cp /tmp/topaz_src/include/dt-bindings/iio/qti_power_supply_iio.h "$EXT/inc/dt-bindings/iio/"
+
+          # Patch halt-after-3-resets (diterapkan pada salinan, bukan pada source kernel)
+          URL="https://raw.githubusercontent.com/Codename-riho/Kernel_builder/refs/heads/Builders/.github/Patches/ds28e16-halt-after-3-reset-failures.patch"
+          curl -fsSL --retry 3 -o /tmp/ds28e16.patch "$URL"
+          mkdir -p /tmp/ds_patch_tree/drivers/power/supply/battery_secret
+          cp "$SRC"/* /tmp/ds_patch_tree/drivers/power/supply/battery_secret/
+          (cd /tmp/ds_patch_tree && patch -p1 --batch --no-backup-if-mismatch < /tmp/ds28e16.patch)
+          cp /tmp/ds_patch_tree/drivers/power/supply/battery_secret/ds28e16.c "$EXT/ds28e16.c"
+          grep -q DS_RESET_FAIL_MAX "$EXT/ds28e16.c" || { echo "::error::Patch tidak terpasang"; exit 1; }
+
+          cat > "$EXT/Kbuild" <<'KBUILD'
+          obj-m += onewire_gpio.o batt-ds28e16.o
+          batt-ds28e16-y := ucl_sha3.o sha384_software.o ds28e16.o
+          ccflags-y += -I$(src)/inc -I$(src)
+          KBUILD
+          sed -i 's/^          //' "$EXT/Kbuild"
+          ls -R "$EXT" | head -30
+
+      - name: "🔋 Build modul ds28e16 (eksperimental, tidak menggagalkan build)"
+        if: ${{ env.DS28E16_MODULE == 'true' }}
+        continue-on-error: true
+        working-directory: ${{ env.WORK_DIR }}
+        run: |
+          set -uo pipefail
+          EXT="$WORK_DIR/ds28e16_ext"
+          [ -d "$EXT" ] || { echo "::warning::Driver belum di-stage, dilewati"; exit 0; }
+          KSRC="$WORK_DIR/${KERNEL_LOC_DIR}/${KERNEL_NAME}"
+          KOUT=$(dirname "$(find "$WORK_DIR/out" -maxdepth 5 -type f -name Module.symvers -print -quit 2>/dev/null)" 2>/dev/null || true)
+          [ -n "$KOUT" ] && [ -f "$KOUT/.config" ] || { echo "::warning::Output kernel (Module.symvers/.config) tidak ditemukan, dilewati"; exit 0; }
+          echo "KSRC=$KSRC  KOUT=$KOUT"
+
+          CLANG_BIN="${CLANG_PATH:-}"
+          if [ -z "$CLANG_BIN" ]; then
+            c=$(find "$WORK_DIR" -maxdepth 6 -type f -path '*clang-r*/bin/clang' -print -quit 2>/dev/null || true)
+            [ -n "$c" ] && CLANG_BIN=$(dirname "$c")
+          fi
+          [ -n "$CLANG_BIN" ] && export PATH="$CLANG_BIN:$PATH"
+          clang --version | head -n1 || { echo "::warning::clang tidak ditemukan, dilewati"; exit 0; }
+
+          make -C "$KSRC" O="$KOUT" ARCH=arm64 LLVM=1 LLVM_IAS=1 M="$EXT" KBUILD_MODPOST_WARN=1 modules 2>&1 | tee "$WORK_DIR/ds28e16_build.log"
+          rc=${PIPESTATUS[0]}
+          mkdir -p "$WORK_DIR/out/ds28e16"
+          find "$EXT" -name '*.ko' -exec cp {} "$WORK_DIR/out/ds28e16/" \;
+          cp "$WORK_DIR/ds28e16_build.log" "$WORK_DIR/out/ds28e16/" 2>/dev/null || true
+          if [ "$rc" -ne 0 ]; then
+            echo "::warning::Build modul ds28e16 gagal (rc=$rc), lihat ds28e16_build.log di artifact"
+          else
+            echo "✅ Modul ds28e16:"; ls -lh "$WORK_DIR/out/ds28e16/"*.ko
+            echo "Simbol belum terselesaikan:"; grep -i "undefined" "$WORK_DIR/ds28e16_build.log" | head -20 || true
+          fi
+
+      - name: "📤 Upload modul ds28e16"
+        if: ${{ always() && env.DS28E16_MODULE == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ds28e16-module
+          path: ${{ env.WORK_DIR }}/out/ds28e16/
+          if-no-files-found: ignore
+          retention-days: 3
+
       - name: "📦 Prepare kernel image"
         working-directory: ${{ env.WORK_DIR }}
         run: |
