@@ -1,0 +1,101 @@
+From b60339d236a7c08fd8cf01e35d90811bf94e1b03 Mon Sep 17 00:00:00 2001
+From: Codename-riho <Codename-riho@github.com>
+Date: Fri, 13 Nov 2026 14:08:46 +0700
+Subject: [PATCH] power: supply: ds28e16: halt communication after 3 failed
+ resets
+
+When the DS28E16 does not answer the 1-Wire reset (no presence pulse),
+Read_RomID() and DS28E16_standard_cmd_flow() log "Failed to reset
+ds28e16!" and retry from several retry loops, producing hundreds of log
+lines and repeated bus resets with interrupts disabled.
+
+Count consecutive reset failures. After three, latch the bus as halted
+and fail every further transaction fast with ERROR_NO_DEVICE without
+touching the wire. A successful reset clears the counter. The latch can
+be released at runtime through the new comm_halted module parameter.
+---
+ drivers/power/supply/battery_secret/ds28e16.c | 51 ++++++++++++++++++-
+ 1 file changed, 49 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/power/supply/battery_secret/ds28e16.c b/drivers/power/supply/battery_secret/ds28e16.c
+index 7f04cec..4b1ceaf 100644
+--- a/drivers/power/supply/battery_secret/ds28e16.c
++++ b/drivers/power/supply/battery_secret/ds28e16.c
+@@ -160,6 +160,41 @@ unsigned char crc_low_first(unsigned char *ptr, unsigned char len)
+ 	return (crc);
+ }
+ 
++/*
++ * Stop talking to an absent/unresponsive DS28E16.
++ *
++ * When the 1-Wire presence pulse is missing, the original code retries the
++ * whole transaction over and over (Read_RomID is called from several retry
++ * loops), flooding the kernel log and burning CPU/IRQ-off time in ow_reset().
++ * After DS_RESET_FAIL_MAX consecutive reset failures the bus is considered
++ * dead and every further transaction fails fast with ERROR_NO_DEVICE without
++ * touching the wire. A successful reset clears the counter. The latch can be
++ * released at runtime with: echo 0 > <module>/parameters/comm_halted
++ */
++#define DS_RESET_FAIL_MAX	3
++
++static int ds_reset_fail_cnt;
++static bool ds_comm_halted;
++module_param_named(comm_halted, ds_comm_halted, bool, 0644);
++MODULE_PARM_DESC(comm_halted,
++		 "DS28E16 communication halted after repeated reset failures (write 0 to re-enable)");
++
++/* Called after every ow_reset(): true if the transaction must be aborted. */
++static bool ds_reset_failed(int presence)
++{
++	if (!presence) {
++		ds_reset_fail_cnt = 0;
++		return false;
++	}
++
++	if (++ds_reset_fail_cnt >= DS_RESET_FAIL_MAX && !ds_comm_halted) {
++		ds_comm_halted = true;
++		ds_err("no presence after %d resets, communication halted\n",
++		       DS_RESET_FAIL_MAX);
++	}
++	return true;
++}
++
+ short Read_RomID(unsigned char *RomID)
+ {
+ 	unsigned char i;
+@@ -177,7 +212,12 @@ short Read_RomID(unsigned char *RomID)
+ 		return DS_TRUE;
+ 	}
+ 
+-	if ((ow_reset()) != 0) {
++	if (ds_comm_halted)
++		return ERROR_NO_DEVICE;
++
++	if (ds_reset_failed(ow_reset())) {
++		if (ds_comm_halted)
++			return ERROR_NO_DEVICE;
+ 		ds_err("Failed to reset ds28e16!\n");
+ 		ow_reset();
+ 		Software_Reset();                                                 //2022/4/22
+@@ -263,10 +303,17 @@ unsigned char *read_buf, int *read_len, int write_len)
+ 	?RX: CRC16
+ 	?< wait for reset>
+ 	'''''''''''''''''''''''*/
++	if (ds_comm_halted)
++		return ERROR_NO_DEVICE;
++
+ 	ds_info("DS28E16_standard_cmd_flow start\n");
+ 	mutex_lock(&ds_cmd_lock);    //2022_4_22 important updated
+ 
+-	if ((ow_reset()) != 0) {
++	if (ds_reset_failed(ow_reset())) {
++		if (ds_comm_halted) {
++			mutex_unlock(&ds_cmd_lock);
++			return ERROR_NO_DEVICE;
++		}
+ 		ds_err("Failed to reset ds28e16!\n");
+ 		ow_reset();
+ 		Software_Reset();            //2022/4/22 updated
+-- 
+2.43.0
+
