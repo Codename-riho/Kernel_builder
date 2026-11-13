@@ -22,13 +22,17 @@ on:
   workflow_dispatch:
      inputs:
       kernel_variant:
-        description: "Varian kernel yang dibuild (ksu = hanya KSU, noksu = hanya NoKSU, both = keduanya)"
+        description: "Varian kernel yang dibuild (ksu/noksu x gki/clo; *-all = GKI dan CLO; all = semuanya)"
         type: choice
         options:
-          - both
-          - ksu
-          - noksu
-        default: "both"
+          - all
+          - ksu-gki
+          - ksu-clo
+          - noksu-gki
+          - noksu-clo
+          - ksu-all
+          - noksu-all
+        default: "all"
       ksu_manager:
         description: "Root manager untuk varian KSU"
         type: choice
@@ -152,13 +156,18 @@ jobs:
               - "https://raw.githubusercontent.com/Codename-riho/Kernel_builder/refs/heads/Builders/.github/Patches/0001-scripts-sign-builds.patch"
               - "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/main/0001-scripts-Don-t-append-and-dirty-to-localversion.patch"
               - "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/main/0001-scripts-do-not-ship-full-auto_localversion.patch"
-        # Filter matrix sesuai input kernel_variant:
-        #   ksu   → hanya varian KSU   (GKI, CLO)
-        #   noksu → hanya varian NoKSU (GKI-NoKSU, CLO-NoKSU)
-        #   both  (default & schedule) → semua matrix berjalan seperti biasa
+        # Filter matrix sesuai input kernel_variant (nama matrix: GKI, CLO, GKI-NoKSU, CLO-NoKSU):
+        #   ksu-gki   → GKI              noksu-gki → GKI-NoKSU
+        #   ksu-clo   → CLO              noksu-clo → CLO-NoKSU
+        #   ksu-all   → GKI + CLO        noksu-all → GKI-NoKSU + CLO-NoKSU
+        #   all (default & schedule) → semua matrix berjalan
         exclude: >-
-          ${{ inputs.kernel_variant == 'noksu' && fromJSON('[{"kernel":{"enable_ksu":true}}]')
-          || inputs.kernel_variant == 'ksu' && fromJSON('[{"kernel":{"enable_ksu":false}}]')
+          ${{ inputs.kernel_variant == 'ksu-gki' && fromJSON('[{"kernel":{"name":"CLO"}},{"kernel":{"name":"GKI-NoKSU"}},{"kernel":{"name":"CLO-NoKSU"}}]')
+          || inputs.kernel_variant == 'ksu-clo' && fromJSON('[{"kernel":{"name":"GKI"}},{"kernel":{"name":"GKI-NoKSU"}},{"kernel":{"name":"CLO-NoKSU"}}]')
+          || inputs.kernel_variant == 'noksu-gki' && fromJSON('[{"kernel":{"name":"GKI"}},{"kernel":{"name":"CLO"}},{"kernel":{"name":"CLO-NoKSU"}}]')
+          || inputs.kernel_variant == 'noksu-clo' && fromJSON('[{"kernel":{"name":"GKI"}},{"kernel":{"name":"CLO"}},{"kernel":{"name":"GKI-NoKSU"}}]')
+          || inputs.kernel_variant == 'ksu-all' && fromJSON('[{"kernel":{"enable_ksu":false}}]')
+          || inputs.kernel_variant == 'noksu-all' && fromJSON('[{"kernel":{"enable_ksu":true}}]')
           || fromJSON('[]') }}
     env:
       KERNEL_LOC_DIR: ${{ matrix.kernel.dir }}
@@ -171,7 +180,7 @@ jobs:
       WORK_DIR: ${{ github.workspace }}
       
       # default aman untuk schedule + manual run
-      KERNEL_VARIANT: "${{ inputs.kernel_variant || 'both' }}"   # ksu | noksu | both (bawaan)
+      KERNEL_VARIANT: "${{ inputs.kernel_variant || 'all' }}"   # all | ksu-gki | ksu-clo | noksu-gki | noksu-clo | ksu-all | noksu-all
       TOOLCHAIN_TYPE: "${{ inputs.toolchain_type || 'android-tools' }}"
       DROIDSPACES_SUPPORT: "${{ inputs.droidspaces_support && 'true' || 'false' }}"   # bawaan: mati
       SUSFS_SUPPORT: "${{ format('{0}', inputs.susfsSupport) == 'false' && 'false' || 'true' }}"   # bawaan: aktif
@@ -1594,122 +1603,131 @@ jobs:
 
           # ── 2) Patch kernel (anchor teks, bukan nomor baris) ──
           export FULL_VERSION KEEP_COMMS VINTF_SPOOF_DEBUG
-          # Patcher ditulis dalam C++ (dikompilasi di runner; g++ ada dari build-essential)
+          # Patcher ditulis dalam Rust (rustc bawaan runner, tanpa crate eksternal)
+          if ! command -v rustc >/dev/null 2>&1; then
+            echo "ℹ️ rustc belum ada, memasang..."
+            sudo apt-get install -y -qq rustc >/dev/null \
+              || { echo "::error::rustc tidak tersedia di runner"; exit 1; }
+          fi
           PATCHER_DIR="$(mktemp -d)"
           trap 'rm -rf "$PATCHER_DIR"' EXIT
-          cat > "$PATCHER_DIR/vintf_patcher.cpp" <<'CPP'
-          // vintf_patcher.cpp - patch kernel (uname/proc) untuk Kernel Version Spoof.
-          // Dikompilasi & dijalankan oleh workflow dari root source kernel.
+          cat > "$PATCHER_DIR/vintf_patcher.rs" <<'RUST'
+          // vintf_patcher.rs - patch kernel (uname/proc) untuk Kernel Version Spoof.
+          // Dikompilasi (rustc, tanpa cargo/crate eksternal) & dijalankan oleh workflow dari root source kernel.
           // Env: FULL_VERSION, KEEP_COMMS (dipisah spasi), VINTF_SPOOF_DEBUG (0/1)
-          #include <sys/stat.h>
+          //
+          // File dibaca per-byte (Latin-1 <-> char 1:1) supaya isi non-UTF-8 pada source kernel
+          // tetap utuh saat ditulis kembali. Semua teks yang disisipkan murni ASCII.
+          use std::env;
+          use std::fs;
+          use std::path::Path;
+          use std::process::exit;
 
-          #include <cctype>
-          #include <cstdlib>
-          #include <fstream>
-          #include <iostream>
-          #include <sstream>
-          #include <string>
-          #include <vector>
-
-          using std::string;
-          static const size_t NPOS = string::npos;
-
-          [[noreturn]] static void die(const string &msg) {
-              std::cout << "::error::" << msg << std::endl;
-              std::exit(1);
+          fn die(msg: &str) -> ! {
+              println!("::error::{}", msg);
+              exit(1);
           }
 
-          static string read_file(const string &p) {
-              std::ifstream f(p, std::ios::binary);
-              if (!f) die("Tidak bisa membaca " + p);
-              std::ostringstream ss;
-              ss << f.rdbuf();
-              return ss.str();
-          }
-
-          static void write_file(const string &p, const string &s) {
-              std::ofstream f(p, std::ios::binary | std::ios::trunc);
-              if (!f) die("Tidak bisa menulis " + p);
-              f << s;
-              if (!f) die("Gagal menulis " + p);
-          }
-
-          static bool is_file(const string &p) {
-              struct stat st;
-              return stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode);
-          }
-
-          static bool contains(const string &s, const string &n) { return s.find(n) != NPOS; }
-
-          // n ditemukan seluruhnya di dalam [a, b)
-          static bool contains_range(const string &s, const string &n, size_t a, size_t b) {
-              size_t k = s.find(n, a);
-              return k != NPOS && k + n.size() <= b;
-          }
-
-          static string replace_all(string s, const string &from, const string &to) {
-              if (from.empty()) return s;
-              size_t pos = 0;
-              while ((pos = s.find(from, pos)) != NPOS) {
-                  s.replace(pos, from.size(), to);
-                  pos += to.size();
+          fn read_file(p: &str) -> String {
+              match fs::read(p) {
+                  Ok(b) => b.iter().map(|&c| c as char).collect(),
+                  Err(_) => die(&format!("Tidak bisa membaca {}", p)),
               }
-              return s;
           }
 
-          static string lower(string s) {
-              for (char &c : s) c = (char)std::tolower((unsigned char)c);
-              return s;
-          }
-
-          static bool is_line_start(const string &s, size_t p) { return p == 0 || s[p - 1] == '\n'; }
-
-          // #include pertama di awal baris -> sisipkan vintf_spoof.h tepat setelahnya
-          static string add_include(const string &src, const string &where) {
-              const string inc = "#include ";
-              size_t p = 0;
-              while (p <= src.size()) {
-                  if (src.compare(p, inc.size(), inc) == 0) {
-                      size_t e = src.find('\n', p);
-                      if (e == NPOS) e = src.size();
-                      return src.substr(0, e) + "\n#include <linux/vintf_spoof.h>" + src.substr(e);
+          fn write_file(p: &str, s: &str) {
+              let mut out = Vec::with_capacity(s.len());
+              for c in s.chars() {
+                  let v = c as u32;
+                  if v > 0xFF {
+                      die(&format!("Karakter non-ASCII tidak valid untuk {}", p));
                   }
-                  size_t nl = src.find('\n', p);
-                  if (nl == NPOS) break;
-                  p = nl + 1;
+                  out.push(v as u8);
               }
-              die("Tidak ada #include di " + where);
+              if fs::write(p, out).is_err() {
+                  die(&format!("Gagal menulis {}", p));
+              }
           }
 
-          // Cari fungsi: dari `head` sampai "\n}" pertama (inklusif). false bila tidak ada.
-          static bool find_function(const string &s, const string &head, size_t &fs, size_t &fe) {
-              fs = s.find(head);
-              if (fs == NPOS) return false;
-              size_t e = s.find("\n}", fs + head.size());
-              if (e == NPOS) return false;
-              fe = e + 2;
-              return true;
+          fn is_file(p: &str) -> bool {
+              Path::new(p).is_file()
           }
 
-          // Panggilan susfs_spoof_uname(&tmp) dengan spasi bebas
-          static bool has_susfs_call(const string &s) {
-              const string name = "susfs_spoof_uname(";
-              size_t pos = 0;
-              while ((pos = s.find(name, pos)) != NPOS) {
-                  size_t i = pos + name.size();
-                  auto skip = [&]() { while (i < s.size() && std::isspace((unsigned char)s[i])) i++; };
-                  skip();
-                  if (s.compare(i, 4, "&tmp") == 0) {
+          fn contains(s: &str, n: &str) -> bool {
+              s.contains(n)
+          }
+
+          /// n ditemukan seluruhnya di dalam [a, b)
+          fn contains_range(s: &str, n: &str, a: usize, b: usize) -> bool {
+              match s[a..].find(n) {
+                  Some(k) => a + k + n.len() <= b,
+                  None => false,
+              }
+          }
+
+          fn lower(s: &str) -> String {
+              s.to_ascii_lowercase()
+          }
+
+          fn is_line_start(s: &str, p: usize) -> bool {
+              p == 0 || s.as_bytes()[p - 1] == b'\n'
+          }
+
+          fn is_blank(c: u8) -> bool {
+              c == b' ' || c == b'\t'
+          }
+
+          /// #include pertama di awal baris -> sisipkan vintf_spoof.h tepat setelahnya
+          fn add_include(src: &str, whence: &str) -> String {
+              let inc = "#include ";
+              let mut p = 0usize;
+              while p <= src.len() {
+                  if src[p..].starts_with(inc) {
+                      let e = src[p..].find('\n').map(|i| p + i).unwrap_or(src.len());
+                      return format!("{}\n#include <linux/vintf_spoof.h>{}", &src[..e], &src[e..]);
+                  }
+                  match src[p..].find('\n') {
+                      Some(nl) => p += nl + 1,
+                      None => break,
+                  }
+              }
+              die(&format!("Tidak ada #include di {}", whence));
+          }
+
+          /// Cari fungsi: dari `head` sampai "\n}" pertama (inklusif).
+          fn find_function(s: &str, head: &str) -> Option<(usize, usize)> {
+              let fs = s.find(head)?;
+              let from = fs + head.len();
+              let e = s[from..].find("\n}")? + from;
+              Some((fs, e + 2))
+          }
+
+          /// Panggilan susfs_spoof_uname(&tmp) dengan spasi bebas
+          fn has_susfs_call(s: &str) -> bool {
+              let name = "susfs_spoof_uname(";
+              let b = s.as_bytes();
+              let mut pos = 0usize;
+              while let Some(k) = s[pos..].find(name) {
+                  let at = pos + k;
+                  let mut i = at + name.len();
+                  while i < b.len() && b[i].is_ascii_whitespace() {
+                      i += 1;
+                  }
+                  if s[i..].starts_with("&tmp") {
                       i += 4;
-                      skip();
-                      if (i < s.size() && s[i] == ')') return true;
+                      while i < b.len() && b[i].is_ascii_whitespace() {
+                          i += 1;
+                      }
+                      if i < b.len() && b[i] == b')' {
+                          return true;
+                      }
                   }
-                  pos += name.size();
+                  pos = at + name.len();
               }
-              return false;
+              false
           }
 
-          static const char *const HEADER_TMPL = R"HDR(/* SPDX-License-Identifier: GPL-2.0 */
+          const HEADER_TMPL: &str = r#"/* SPDX-License-Identifier: GPL-2.0 */
           #ifndef _LINUX_VINTF_SPOOF_H
           #define _LINUX_VINTF_SPOOF_H
 
@@ -1735,9 +1753,9 @@ jobs:
           extern void vintf_spoof_osrelease(char *out, size_t len);
 
           #endif /* _LINUX_VINTF_SPOOF_H */
-          )HDR";
+          "#;
 
-          static const char *const FUNC_TMPL = R"FUN(/* VINTF-SPOOF-BEGIN: fungsi keputusan */
+          const FUNC_TMPL: &str = r#"/* VINTF-SPOOF-BEGIN: fungsi keputusan */
           #if VINTF_SPOOF_DEBUG
           static void vintf_spoof_debug(const char *pname, bool spoof)
           {
@@ -1832,203 +1850,220 @@ jobs:
           }
           /* VINTF-SPOOF-END: fungsi keputusan */
 
-          )FUN";
+          "#;
 
-          static const char *const CALL =
-              "\t/* VINTF-SPOOF-BEGIN */\n"
-              "\tvintf_spoof_apply(&tmp);\n"
-              "\t/* VINTF-SPOOF-END */\n";
+          const CALL: &str = "\t/* VINTF-SPOOF-BEGIN */\n\tvintf_spoof_apply(&tmp);\n\t/* VINTF-SPOOF-END */\n";
 
-          int main() {
-              const char *rel_env = std::getenv("FULL_VERSION");
-              if (!rel_env) die("FULL_VERSION tidak diset");
-              string release = rel_env;
-
-              std::vector<string> keep;
-              {
-                  const char *k = std::getenv("KEEP_COMMS");
-                  std::istringstream ss(k ? k : "");
-                  string w;
-                  while (ss >> w) keep.push_back(w);
+          fn main() {
+              let release = match env::var("FULL_VERSION") {
+                  Ok(v) => v,
+                  Err(_) => die("FULL_VERSION tidak diset"),
+              };
+              let keep: Vec<String> = env::var("KEEP_COMMS")
+                  .unwrap_or_default()
+                  .split_whitespace()
+                  .map(|w| w.to_string())
+                  .collect();
+              let debug = env::var("VINTF_SPOOF_DEBUG").unwrap_or_else(|_| "0".to_string());
+              if keep.is_empty() {
+                  die("KEEP_COMMS kosong");
               }
-              const char *dbg = std::getenv("VINTF_SPOOF_DEBUG");
-              string debug = dbg ? dbg : "0";
-              if (keep.empty()) die("KEEP_COMMS kosong");
 
-              const string SYS = "kernel/sys.c", VER = "fs/proc/version.c";
-              const string SYSCTL = "kernel/utsname_sysctl.c", HDR = "include/linux/vintf_spoof.h";
+              let sys = "kernel/sys.c";
+              let ver = "fs/proc/version.c";
+              let sysctl = "kernel/utsname_sysctl.c";
+              let hdr = "include/linux/vintf_spoof.h";
 
-              string sys_src = read_file(SYS);
-              if (contains(sys_src, "VINTF-SPOOF-BEGIN")) {
-                  std::cout << "ℹ️ kernel/sys.c sudah dipatch, dilewati" << std::endl;
-                  return 0;
+              let sys_src = read_file(sys);
+              if contains(&sys_src, "VINTF-SPOOF-BEGIN") {
+                  println!("ℹ️ kernel/sys.c sudah dipatch, dilewati");
+                  return;
               }
 
               // ── kernel/sys.c: titik sisip di newuname ──
-              size_t start = sys_src.find("SYSCALL_DEFINE1(newuname");
-              if (start == NPOS) die("SYSCALL newuname tidak ditemukan di kernel/sys.c");
-              size_t line_start = 0;
-              if (start > 0) {
-                  size_t p = sys_src.rfind('\n', start - 1);
-                  line_start = (p == NPOS) ? 0 : p + 1;
-              }
+              let start = match sys_src.find("SYSCALL_DEFINE1(newuname") {
+                  Some(s) => s,
+                  None => die("SYSCALL newuname tidak ditemukan di kernel/sys.c"),
+              };
+              let line_start = if start > 0 {
+                  sys_src[..start].rfind('\n').map(|p| p + 1).unwrap_or(0)
+              } else {
+                  0
+              };
 
-              const string anchor = "if (copy_to_user(name, &tmp, sizeof(tmp)))";
-              size_t m_start = NPOS;
+              let anchor = "if (copy_to_user(name, &tmp, sizeof(tmp)))";
+              let sb = sys_src.as_bytes();
+              let mut m_start: Option<usize> = None;
               {
-                  size_t p = start;
-                  if (!is_line_start(sys_src, p)) {
-                      size_t nl = sys_src.find('\n', p);
-                      p = (nl == NPOS) ? sys_src.size() + 1 : nl + 1;
+                  let mut p = start;
+                  if !is_line_start(&sys_src, p) {
+                      p = match sys_src[p..].find('\n') {
+                          Some(nl) => p + nl + 1,
+                          None => sys_src.len() + 1,
+                      };
                   }
-                  while (p <= sys_src.size()) {
-                      size_t q = p;
-                      while (q < sys_src.size() && (sys_src[q] == ' ' || sys_src[q] == '\t')) q++;
-                      if (sys_src.compare(q, anchor.size(), anchor) == 0) {
-                          m_start = p;
+                  while p <= sys_src.len() {
+                      let mut q = p;
+                      while q < sb.len() && is_blank(sb[q]) {
+                          q += 1;
+                      }
+                      if sys_src[q..].starts_with(anchor) {
+                          m_start = Some(p);
                           break;
                       }
-                      size_t nl = sys_src.find('\n', p);
-                      if (nl == NPOS) break;
-                      p = nl + 1;
+                      match sys_src[p..].find('\n') {
+                          Some(nl) => p += nl + 1,
+                          None => break,
+                      }
                   }
               }
-              if (m_start == NPOS) die("Anchor copy_to_user tidak ditemukan di newuname");
-              if (contains_range(sys_src, "SYSCALL_DEFINE", start + 10, m_start))
+              let m_start = match m_start {
+                  Some(m) => m,
+                  None => die("Anchor copy_to_user tidak ditemukan di newuname"),
+              };
+              if contains_range(&sys_src, "SYSCALL_DEFINE", start + 10, m_start) {
                   die("Anchor berada di luar fungsi newuname");
+              }
 
               // Urutan: panggilan SUSFS harus SEBELUM blok kita (supaya SUSFS bisa dideteksi & dihormati)
-              size_t fn_end = sys_src.find("\n}\n", m_start);
-              if (fn_end == NPOS) fn_end = sys_src.size();
-              if (contains_range(sys_src, "susfs_spoof_uname", m_start, fn_end))
-                  die("susfs_spoof_uname berada SETELAH titik sisip. Pastikan step ini berjalan setelah "
-                      "'Inject SUSFS Integration' dan periksa kernel/sys.c");
-              if (contains_range(sys_src, "susfs_spoof_uname", start, m_start))
-                  std::cout << "✅ Spoof uname SUSFS terdeteksi di newuname: nilai SUSFS akan dihormati" << std::endl;
-              else
-                  std::cout << "ℹ️ Spoof uname SUSFS tidak terdeteksi di newuname (SUSFS nonaktif atau API berbeda)"
-                            << std::endl;
+              let fn_end = sys_src[m_start..]
+                  .find("\n}\n")
+                  .map(|i| m_start + i)
+                  .unwrap_or(sys_src.len());
+              if contains_range(&sys_src, "susfs_spoof_uname", m_start, fn_end) {
+                  die("susfs_spoof_uname berada SETELAH titik sisip. Pastikan step ini berjalan setelah \
+                       'Inject SUSFS Integration' dan periksa kernel/sys.c");
+              }
+              if contains_range(&sys_src, "susfs_spoof_uname", start, m_start) {
+                  println!("✅ Spoof uname SUSFS terdeteksi di newuname: nilai SUSFS akan dihormati");
+              } else {
+                  println!("ℹ️ Spoof uname SUSFS tidak terdeteksi di newuname (SUSFS nonaktif atau API berbeda)");
+              }
 
               // Panggilan SUSFS untuk jalur osrelease, hanya jika bentuknya persis dikenali
-              string susfs_c;
-              if (has_susfs_call(sys_src))
-                  susfs_c =
-                      "#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME\n"
-                      "    susfs_spoof_uname(&tmp);\n"
-                      "#endif\n";
+              let susfs_c = if has_susfs_call(&sys_src) {
+                  "#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME\n    susfs_spoof_uname(&tmp);\n#endif\n"
+              } else {
+                  ""
+              };
 
-              string keep_c;
-              for (size_t i = 0; i < keep.size(); i++) {
-                  if (i) keep_c += ", ";
-                  keep_c += "\"" + keep[i] + "\"";
-              }
-              string header = replace_all(replace_all(HEADER_TMPL, "@RELEASE@", release), "@DEBUG@", debug);
-              string func = replace_all(replace_all(FUNC_TMPL, "@KEEP@", keep_c), "@SUSFS@", susfs_c);
+              let keep_c = keep
+                  .iter()
+                  .map(|k| format!("\"{}\"", k))
+                  .collect::<Vec<_>>()
+                  .join(", ");
+              let header = HEADER_TMPL.replace("@RELEASE@", &release).replace("@DEBUG@", &debug);
+              let func = FUNC_TMPL.replace("@KEEP@", &keep_c).replace("@SUSFS@", susfs_c);
 
-              string new_sys = sys_src.substr(0, m_start) + CALL + sys_src.substr(m_start);
-              new_sys = new_sys.substr(0, line_start) + func + new_sys.substr(line_start);
-              new_sys = add_include(new_sys, SYS);
+              let mut new_sys = format!("{}{}{}", &sys_src[..m_start], CALL, &sys_src[m_start..]);
+              new_sys = format!("{}{}{}", &new_sys[..line_start], func, &new_sys[line_start..]);
+              new_sys = add_include(&new_sys, sys);
 
               // ── fs/proc/version.c (/proc/version): opsional; dilewati bila SUSFS ikut menyentuhnya ──
-              bool have_ver = false;
-              string new_ver;
-              if (is_file(VER)) {
-                  string v = read_file(VER);
-                  size_t fs = 0, fe = 0;
-                  bool fm = find_function(v, "static int version_proc_show(", fs, fe);
-                  string body = fm ? v.substr(fs, fe - fs) : "";
-                  if (contains(v, "vintf_spoof")) {
-                      std::cout << "ℹ️ fs/proc/version.c sudah dipatch" << std::endl;
-                  } else if (contains(lower(v), "susfs")) {
-                      std::cout << "ℹ️ fs/proc/version.c sudah ditangani SUSFS, tidak diubah" << std::endl;
-                  } else if (!fm || !contains(body, "utsname()->release")) {
-                      std::cout << "::warning::fs/proc/version.c: pola tidak cocok, /proc/version tidak di-spoof"
-                                << std::endl;
+              let mut new_ver: Option<String> = None;
+              if is_file(ver) {
+                  let v = read_file(ver);
+                  let fm = find_function(&v, "static int version_proc_show(");
+                  let body = fm.map(|(a, b)| v[a..b].to_string()).unwrap_or_default();
+                  if contains(&v, "vintf_spoof") {
+                      println!("ℹ️ fs/proc/version.c sudah dipatch");
+                  } else if contains(&lower(&v), "susfs") {
+                      println!("ℹ️ fs/proc/version.c sudah ditangani SUSFS, tidak diubah");
+                  } else if fm.is_none() || !contains(&body, "utsname()->release") {
+                      println!("::warning::fs/proc/version.c: pola tidak cocok, /proc/version tidak di-spoof");
                   } else {
-                      body = replace_all(body, "utsname()->release",
-                                         "(vintf_spoof_wanted() ? VINTF_SPOOF_RELEASE : utsname()->release)");
-                      new_ver = add_include(v.substr(0, fs) + body + v.substr(fe), VER);
-                      have_ver = true;
+                      let (fs_, fe) = fm.unwrap();
+                      let body = body.replace(
+                          "utsname()->release",
+                          "(vintf_spoof_wanted() ? VINTF_SPOOF_RELEASE : utsname()->release)",
+                      );
+                      new_ver = Some(add_include(&format!("{}{}{}", &v[..fs_], body, &v[fe..]), ver));
                   }
               } else {
-                  std::cout << "::warning::fs/proc/version.c tidak ditemukan, /proc/version tidak di-spoof"
-                            << std::endl;
+                  println!("::warning::fs/proc/version.c tidak ditemukan, /proc/version tidak di-spoof");
               }
 
               // ── kernel/utsname_sysctl.c (/proc/sys/kernel/osrelease): opsional ──
-              bool have_sc = false;
-              string new_sc;
-              if (is_file(SYSCTL)) {
-                  string sc = read_file(SYSCTL);
-                  size_t fs = 0, fe = 0;
-                  bool fm = find_function(sc, "static int proc_do_uts_string(", fs, fe);
-                  string fn = fm ? sc.substr(fs, fe - fs) : "";
+              let mut new_sc: Option<String> = None;
+              if is_file(sysctl) {
+                  let sc = read_file(sysctl);
+                  let fm = find_function(&sc, "static int proc_do_uts_string(");
+                  let fnb = fm.map(|(a, b)| sc[a..b].to_string()).unwrap_or_default();
 
                   // baris "<indent>up_read(&uts_sem);" pertama di dalam fungsi
-                  bool um = false;
-                  size_t um_start = 0, um_end = 0;
-                  string ind;
-                  if (fm) {
-                      const string up = "up_read(&uts_sem);";
-                      size_t p = 0;
-                      while (p < fn.size()) {
-                          size_t q = p;
-                          while (q < fn.size() && (fn[q] == ' ' || fn[q] == '\t')) q++;
-                          if (fn.compare(q, up.size(), up) == 0) {
-                              size_t r = q + up.size();
-                              while (r < fn.size() && (fn[r] == ' ' || fn[r] == '\t')) r++;
-                              if (r < fn.size() && fn[r] == '\n') {
-                                  um = true;
-                                  um_start = p;
-                                  um_end = r + 1;
-                                  ind = fn.substr(p, q - p);
+                  let mut um: Option<(usize, usize, String)> = None;
+                  if fm.is_some() {
+                      let up = "up_read(&uts_sem);";
+                      let b = fnb.as_bytes();
+                      let mut p = 0usize;
+                      while p < fnb.len() {
+                          let mut q = p;
+                          while q < b.len() && is_blank(b[q]) {
+                              q += 1;
+                          }
+                          if fnb[q..].starts_with(up) {
+                              let mut r = q + up.len();
+                              while r < b.len() && is_blank(b[r]) {
+                                  r += 1;
+                              }
+                              if r < b.len() && b[r] == b'\n' {
+                                  um = Some((p, r + 1, fnb[p..q].to_string()));
                                   break;
                               }
                           }
-                          size_t nl = fn.find('\n', p);
-                          if (nl == NPOS) break;
-                          p = nl + 1;
+                          match fnb[p..].find('\n') {
+                              Some(nl) => p += nl + 1,
+                              None => break,
+                          }
                       }
                   }
 
-                  if (contains(sc, "vintf_spoof_osrelease")) {
-                      std::cout << "ℹ️ kernel/utsname_sysctl.c sudah dipatch" << std::endl;
-                  } else if (!fm || !um || !contains_range(fn, "memcpy(tmp_data", 0, um_start)) {
-                      std::cout << "::warning::kernel/utsname_sysctl.c: pola proc_do_uts_string tidak cocok, "
-                                   "osrelease tidak di-spoof"
-                                << std::endl;
+                  if contains(&sc, "vintf_spoof_osrelease") {
+                      println!("ℹ️ kernel/utsname_sysctl.c sudah dipatch");
+                  } else if fm.is_none()
+                      || um.is_none()
+                      || !contains_range(&fnb, "memcpy(tmp_data", 0, um.as_ref().unwrap().0)
+                  {
+                      println!(
+                          "::warning::kernel/utsname_sysctl.c: pola proc_do_uts_string tidak cocok, osrelease tidak di-spoof"
+                      );
                   } else {
-                      string ins = ind + "/* VINTF-OSRELEASE-BEGIN */\n" +
-                                   ind + "if (!write && !strcmp(table->procname, \"osrelease\"))\n" +
-                                   ind + "\tvintf_spoof_osrelease(tmp_data, sizeof(tmp_data));\n" +
-                                   ind + "/* VINTF-OSRELEASE-END */\n";
-                      string new_fn = fn.substr(0, um_end) + ins + fn.substr(um_end);
-                      new_sc = add_include(sc.substr(0, fs) + new_fn + sc.substr(fe), SYSCTL);
-                      have_sc = true;
+                      let (fs_, fe) = fm.unwrap();
+                      let (_, um_end, ind) = um.unwrap();
+                      let ins = format!(
+                          "{i}/* VINTF-OSRELEASE-BEGIN */\n\
+                           {i}if (!write && !strcmp(table->procname, \"osrelease\"))\n\
+                           {i}\tvintf_spoof_osrelease(tmp_data, sizeof(tmp_data));\n\
+                           {i}/* VINTF-OSRELEASE-END */\n",
+                          i = ind
+                      );
+                      let new_fn = format!("{}{}{}", &fnb[..um_end], ins, &fnb[um_end..]);
+                      new_sc = Some(add_include(
+                          &format!("{}{}{}", &sc[..fs_], new_fn, &sc[fe..]),
+                          sysctl,
+                      ));
                   }
               } else {
-                  std::cout << "::warning::kernel/utsname_sysctl.c tidak ditemukan, osrelease tidak di-spoof"
-                            << std::endl;
+                  println!("::warning::kernel/utsname_sysctl.c tidak ditemukan, osrelease tidak di-spoof");
               }
 
               // Semua perhitungan sukses: baru tulis file
-              write_file(HDR, header);
-              write_file(SYS, new_sys);
-              string done = HDR + ", " + SYS;
-              if (have_ver) {
-                  write_file(VER, new_ver);
-                  done += ", " + VER;
+              write_file(hdr, &header);
+              write_file(sys, &new_sys);
+              let mut done = format!("{}, {}", hdr, sys);
+              if let Some(v) = &new_ver {
+                  write_file(ver, v);
+                  done.push_str(&format!(", {}", ver));
               }
-              if (have_sc) {
-                  write_file(SYSCTL, new_sc);
-                  done += ", " + SYSCTL;
+              if let Some(s) = &new_sc {
+                  write_file(sysctl, s);
+                  done.push_str(&format!(", {}", sysctl));
               }
-              std::cout << "patched: " << done << std::endl;
-              return 0;
+              println!("patched: {}", done);
           }
-          CPP
-          g++ -std=c++17 -O1 -o "$PATCHER_DIR/vintf_patcher" "$PATCHER_DIR/vintf_patcher.cpp" \
-            || { echo "::error::Gagal mengompilasi patcher C++"; exit 1; }
+          RUST
+          rustc --edition 2021 -O -o "$PATCHER_DIR/vintf_patcher" "$PATCHER_DIR/vintf_patcher.rs" \
+            || { echo "::error::Gagal mengompilasi patcher Rust"; exit 1; }
           "$PATCHER_DIR/vintf_patcher"
 
           # ── 3) Verifikasi hasil ──
@@ -2530,7 +2565,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
           TELEGRAM_IMAGE_URL: ${{ secrets.TELEGRAM_IMAGE_URL }}
-          KERNEL_VARIANT: ${{ inputs.kernel_variant || 'both' }}
+          KERNEL_VARIANT: ${{ inputs.kernel_variant || 'all' }}
           KSU_MANAGER: ${{ inputs.ksu_manager || 'BakaSU' }}
           KSU_REF: ${{ inputs.ksu_ref }}
           SUSFS_SUPPORT: ${{ format('{0}', inputs.susfsSupport) == 'false' && 'false' || 'true' }}
@@ -2583,9 +2618,13 @@ jobs:
             DROIDSPACES_TEXT="Enabled Proper Working"; fi
 
           case "$KERNEL_VARIANT" in
-            ksu)   VARIANT_TEXT="KSU saja (GKI + CLO)" ;;
-            noksu) VARIANT_TEXT="NoKSU saja (GKI + CLO)" ;;
-            *)     VARIANT_TEXT="KSU + NoKSU (semua varian)" ;;
+            ksu-gki)   VARIANT_TEXT="KSU (GKI)" ;;
+            ksu-clo)   VARIANT_TEXT="KSU (CLO)" ;;
+            noksu-gki) VARIANT_TEXT="NoKSU (GKI)" ;;
+            noksu-clo) VARIANT_TEXT="NoKSU (CLO)" ;;
+            ksu-all)   VARIANT_TEXT="KSU (GKI + CLO)" ;;
+            noksu-all) VARIANT_TEXT="NoKSU (GKI + CLO)" ;;
+            *)         VARIANT_TEXT="KSU + NoKSU (GKI + CLO, semua varian)" ;;
           esac
 
           MANAGER=$(printf '%s' "$KSU_MANAGER${KSU_REF:+ @ $KSU_REF}" | esc)
