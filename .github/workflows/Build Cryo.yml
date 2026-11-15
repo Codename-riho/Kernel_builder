@@ -93,90 +93,29 @@ on:
                                   
 jobs:
   build-kernels:
-    name: "❄️ Build Cryo ${{ matrix.kernel.name }} kernel"
+    name: "❄️ Build Cryo ${{ matrix.base == 'gki' && 'GKI' || 'CLO' }}${{ matrix.ksu == 'noksu' && '-NoKSU' || '' }} kernel"
     runs-on: ubuntu-26.04
     timeout-minutes: 300
     strategy:
       fail-fast: false
       matrix:
-        kernel:
-          - name: "GKI"
-            dir: "common_gki"
-            repo_name: "common"
-            repo_url: "https://github.com/Codename-riho/Kernel_builder.git"
-            branch: "google"
-            defconfig: "gki_defconfig"
-            local_version: "-Cryo-GKI"
-            output_name: "Image.gki.ksu"
-            enable_ksu: true
-            extra_patches:
-              - "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/main/0001-gki-fixup.patch"
-              - "https://raw.githubusercontent.com/Codename-riho/Kernel_builder/refs/heads/Builders/.github/Patches/0001-scripts-sign-builds.patch"
-              - "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/main/0001-scripts-Don-t-append-and-dirty-to-localversion.patch"
-              - "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/main/0001-scripts-do-not-ship-full-auto_localversion.patch"
-          - name: "CLO"
-            dir: "common_clo"
-            repo_name: "clo"
-            repo_url: "https://github.com/Codename-riho/Kernel_builder.git"
-            branch: "codelinaro"
-            defconfig: "gki_defconfig"
-            local_version: "-Cryo-CLO"
-            output_name: "Image.clo.ksu"
-            enable_ksu: true
-            extra_patches:
-              - "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/main/0001-gki-fixup.patch"
-              - "https://raw.githubusercontent.com/Codename-riho/Kernel_builder/refs/heads/Builders/.github/Patches/0001-scripts-sign-builds.patch"
-              - "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/main/0001-scripts-Don-t-append-and-dirty-to-localversion.patch"
-              - "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/main/0001-scripts-do-not-ship-full-auto_localversion.patch"
-          - name: "GKI-NoKSU"
-            dir: "common_gki_noksu"
-            repo_name: "common"
-            repo_url: "https://github.com/Codename-riho/Kernel_builder.git"
-            branch: "google"
-            defconfig: "gki_defconfig"
-            local_version: "-Cryo-GKI"
-            output_name: "Image.gki.noksu"
-            enable_ksu: false
-            extra_patches:
-              - "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/main/0001-gki-fixup.patch"
-              - "https://raw.githubusercontent.com/Codename-riho/Kernel_builder/refs/heads/Builders/.github/Patches/0001-scripts-sign-builds.patch"
-              - "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/main/0001-scripts-Don-t-append-and-dirty-to-localversion.patch"
-              - "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/main/0001-scripts-do-not-ship-full-auto_localversion.patch"
-          - name: "CLO-NoKSU"
-            dir: "common_clo_noksu"
-            repo_name: "clo"
-            repo_url: "https://github.com/Codename-riho/Kernel_builder.git"
-            branch: "codelinaro"
-            defconfig: "gki_defconfig"
-            local_version: "-Cryo-CLO"
-            output_name: "Image.clo.noksu"
-            enable_ksu: false
-            extra_patches:
-              - "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/main/0001-gki-fixup.patch"
-              - "https://raw.githubusercontent.com/Codename-riho/Kernel_builder/refs/heads/Builders/.github/Patches/0001-scripts-sign-builds.patch"
-              - "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/main/0001-scripts-Don-t-append-and-dirty-to-localversion.patch"
-              - "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/main/0001-scripts-do-not-ship-full-auto_localversion.patch"
-        # Filter matrix sesuai input kernel_variant (nama matrix: GKI, CLO, GKI-NoKSU, CLO-NoKSU):
-        #   ksu-gki   → GKI              noksu-gki → GKI-NoKSU
-        #   ksu-clo   → CLO              noksu-clo → CLO-NoKSU
-        #   ksu-all   → GKI + CLO        noksu-all → GKI-NoKSU + CLO-NoKSU
-        #   all (default & schedule) → semua matrix berjalan
-        exclude: >-
-          ${{ inputs.kernel_variant == 'ksu-gki' && fromJSON('[{"kernel":{"name":"CLO"}},{"kernel":{"name":"GKI-NoKSU"}},{"kernel":{"name":"CLO-NoKSU"}}]')
-          || inputs.kernel_variant == 'ksu-clo' && fromJSON('[{"kernel":{"name":"GKI"}},{"kernel":{"name":"GKI-NoKSU"}},{"kernel":{"name":"CLO-NoKSU"}}]')
-          || inputs.kernel_variant == 'noksu-gki' && fromJSON('[{"kernel":{"name":"GKI"}},{"kernel":{"name":"CLO"}},{"kernel":{"name":"CLO-NoKSU"}}]')
-          || inputs.kernel_variant == 'noksu-clo' && fromJSON('[{"kernel":{"name":"GKI"}},{"kernel":{"name":"CLO"}},{"kernel":{"name":"GKI-NoKSU"}}]')
-          || inputs.kernel_variant == 'ksu-all' && fromJSON('[{"kernel":{"enable_ksu":false}}]')
-          || inputs.kernel_variant == 'noksu-all' && fromJSON('[{"kernel":{"enable_ksu":true}}]')
-          || fromJSON('[]') }}
+        base: ${{ fromJSON(
+          (inputs.kernel_variant == 'ksu-gki' || inputs.kernel_variant == 'noksu-gki') && '["gki"]' ||
+          (inputs.kernel_variant == 'ksu-clo' || inputs.kernel_variant == 'noksu-clo') && '["clo"]' ||
+          '["gki","clo"]' ) }}
+        ksu: ${{ fromJSON(
+          (inputs.kernel_variant == 'ksu-gki' || inputs.kernel_variant == 'ksu-clo' || inputs.kernel_variant == 'ksu-all') && '["ksu"]' ||
+          (inputs.kernel_variant == 'noksu-gki' || inputs.kernel_variant == 'noksu-clo' || inputs.kernel_variant == 'noksu-all') && '["noksu"]' ||
+          '["ksu","noksu"]' ) }}
     env:
-      KERNEL_LOC_DIR: ${{ matrix.kernel.dir }}
-      KERNEL_NAME: ${{ matrix.kernel.repo_name }}
-      KERNEL_REPO: ${{ matrix.kernel.repo_url }}
-      KERNEL_BRANCH: ${{ matrix.kernel.branch }}
-      DEFCONFIG_NAME: ${{ matrix.kernel.defconfig }}
-      LOCAL_VERSION: ${{ matrix.kernel.local_version }}
-      OUTPUT_NAME: ${{ matrix.kernel.output_name }}
+      KERNEL_TAG: ${{ matrix.base == 'gki' && 'GKI' || 'CLO' }}${{ matrix.ksu == 'noksu' && '-NoKSU' || '' }}
+      KERNEL_LOC_DIR: common_${{ matrix.base }}${{ matrix.ksu == 'noksu' && '_noksu' || '' }}
+      KERNEL_NAME: ${{ matrix.base == 'gki' && 'common' || 'clo' }}
+      KERNEL_REPO: https://github.com/Codename-riho/Kernel_builder.git
+      KERNEL_BRANCH: ${{ matrix.base == 'gki' && 'google' || 'codelinaro' }}
+      DEFCONFIG_NAME: gki_defconfig
+      LOCAL_VERSION: ${{ matrix.base == 'gki' && '-Cryo-GKI' || '-Cryo-CLO' }}
+      OUTPUT_NAME: Image.${{ matrix.base }}.${{ matrix.ksu }}
       WORK_DIR: ${{ github.workspace }}
       
       # default aman untuk schedule + manual run
@@ -533,8 +472,12 @@ jobs:
           while read -r p; do
             [ -n "$p" ] || continue
             apply_patch "$p"
-          done < <(echo '${{ toJSON(matrix.kernel.extra_patches) }}' | jq -r '.[]')
-          
+            done < <(printf '%s\n' \
+            "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/main/0001-gki-fixup.patch" \
+            "https://raw.githubusercontent.com/Codename-riho/Kernel_builder/refs/heads/Builders/.github/Patches/0001-scripts-sign-builds.patch" \
+            "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/main/0001-scripts-Don-t-append-and-dirty-to-localversion.patch" \
+            "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/main/0001-scripts-do-not-ship-full-auto_localversion.patch")
+            
           # Use scripts/config for safe config manipulation
           scripts/config --file "$CONFIG_FILE" \
             -e CONFIG_KALLSYMS \
@@ -861,7 +804,7 @@ jobs:
           echo "✅ Droidspaces: patch kABI + defconfig siap (kernel $KVER.$KPL)"
           
       - name: "😋 Add BBG & NoMount"
-        if: matrix.kernel.enable_ksu == true
+        if: matrix.ksu == true
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         run: |
           wget -qO- https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh | bash
@@ -870,7 +813,7 @@ jobs:
           curl -LSs "https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh" | bash -
       
       - name: "⚔️ Setup Ksu Variant (${{ inputs.ksu_manager || 'BakaSU' }})"
-        if: matrix.kernel.enable_ksu == true
+        if: matrix.ksu == true
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
           KSU_MANAGER: ${{ env.KSU_MANAGER }}
@@ -999,12 +942,12 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: "🩹 Patch manager (SUSFS + extra) & enable KSU"
-        if: matrix.kernel.enable_ksu == true
+        if: matrix.ksu == true
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
           KSU_MANAGER: ${{ inputs.ksu_manager || 'BakaSU' }}
           DEFCONFIG_NAME: ${{ env.DEFCONFIG_NAME }}
-          VARIANT_NAME: ${{ matrix.kernel.name }}
+          VARIANT_NAME: ${{ env.KERNEL_TAG }}
           SUSFS_BRANCH: gki-android13-5.15
           SUSFS_REPO: https://gitlab.com/simonpunk/susfs4ksu.git
         run: |
@@ -1258,7 +1201,7 @@ jobs:
           cryo_edition
      
       - name: "ඞ Inject SUSFS Integration"
-        if: ${{ matrix.kernel.enable_ksu == true && env.SUSFS_SUPPORT == 'true' }}
+        if: ${{ matrix.ksu == true && env.SUSFS_SUPPORT == 'true' }}
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
           SUSFS_COMMIT: ${{ env.SUSFS_COMMIT }}
@@ -1496,7 +1439,7 @@ jobs:
           )
 
       - name: "💉 Safe-mode inject PRIORITY_UID_FILTER"
-        if: matrix.kernel.enable_ksu == true
+        if: matrix.ksu == true
         shell: bash
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
@@ -2226,9 +2169,9 @@ jobs:
         working-directory: ${{ env.WORK_DIR }}
         env:
           KSU_MANAGER: ${{ inputs.ksu_manager || 'BakaSU' }}
-          ENABLE_KSU: ${{ matrix.kernel.enable_ksu }}
+          ENABLE_KSU: ${{ matrix.ksu }}
           SUSFS_SUPPORT: ${{ env.SUSFS_SUPPORT }}
-          VARIANT_NAME: ${{ matrix.kernel.name }}
+          VARIANT_NAME: ${{ env.KERNEL_TAG }}
           PYTHONWARNINGS: ignore::SyntaxWarning
         run: |
           set -o pipefail
@@ -2270,9 +2213,9 @@ jobs:
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
           KSU_MANAGER: ${{ inputs.ksu_manager || 'BakaSU' }}
-          ENABLE_KSU: ${{ matrix.kernel.enable_ksu }}
+          ENABLE_KSU: ${{ matrix.ksu }}
           SUSFS_SUPPORT: ${{ env.SUSFS_SUPPORT }}
-          VARIANT_NAME: ${{ matrix.kernel.name }}
+          VARIANT_NAME: ${{ env.KERNEL_TAG }}
           PYTHONWARNINGS: ignore::SyntaxWarning
         run: |
           set -euo pipefail
@@ -2325,7 +2268,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: error-logs-${{ matrix.kernel.name }}
+          name: error-logs-${{ env.KERNEL_TAG }}
           path: |
             ${{ env.WORK_DIR }}/build_full.log
             ${{ env.WORK_DIR }}/out/.config
@@ -2338,7 +2281,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: config-check-${{ matrix.kernel.name }}
+          name: config-check-${{ env.KERNEL_TAG }}
           path: |
             ${{ env.WORK_DIR }}/config_check.txt
             ${{ env.WORK_DIR }}/ksu_info.txt
