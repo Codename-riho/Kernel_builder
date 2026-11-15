@@ -9,7 +9,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 permissions:
-  contents: write
+  contents: read
   actions: read
 
 concurrency:
@@ -239,10 +239,10 @@ jobs:
           echo "📦 Paket baru: $(( PKG1 - PKG0 )) | penyimpanan terpakai: $(human "$USED")"
           echo "💾 Disk sesudah setup: $(df -h / | awk 'NR==2{print $4" bebas dari "$2" ("$5" terpakai)"}')"
           
-      - name: 🚧 Setup SWAP 24GB
+      - name: 🚧 Setup SWAP 32GB
         uses: pierotofy/set-swap-space@fc79b3f67fa8a838184ce84a674ca12238d2c761 # pinned (dulu @master)
         with:
-            swap-size-gb: 24
+            swap-size-gb: 32
 
       - name: 🔥 Tune Swap
         run: |
