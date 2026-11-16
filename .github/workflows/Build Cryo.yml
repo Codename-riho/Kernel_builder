@@ -859,12 +859,14 @@ jobs:
               SETUP_BRANCH=dev-susfs
               DEFAULT_REF=dev-susfs
               NEED_SUSFS_PATCH=0
+              EXTRA_PATCH_URL="$KSUN_MULTI_PATCH"
               ;;
             KernelSU-Next-pershoot_selinux-hide)
               REPO="pershoot/KernelSU-Next"
               SETUP_BRANCH=dev-susfs-selinux_hide
               DEFAULT_REF=dev-susfs-selinux_hide
               NEED_SUSFS_PATCH=0
+              EXTRA_PATCH_URL="$KSUN_MULTI_PATCH"
               ;;
             KernelSU-Official)
               REPO="tiann/KernelSU"
