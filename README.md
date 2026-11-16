@@ -78,6 +78,6 @@ Released under the [GNU General Public License v3.0](LICENCE).
 - Banner artwork belongs to its original owner.
 - [yougotme101](https://github.com/yougotme101/kernel_msm-5.15) For the incredibly solid MSM-5.15 base tree and the workflow framework
 - [topnotchfreaks](https://github.com/topnotchfreaks/kernel_msm-5.15) For the brilliant Codelinaro (CLO) branch synchronization and the essential patches that push this kernel's performance to its absolute peak.
-- [RapliVx](https://github.com/RapliVx) Base For KSUN Multi Manager Script
-- [NotPichayut](https://github.com/NotPichayut) Base For Kernel Version Spoof Script
+- [RapliVx](https://github.com/RapliVx) For Base KSUN Multi Manager Script
+- [NotPichayut](https://github.com/NotPichayut) For Base Kernel Version Spoof Script
 
