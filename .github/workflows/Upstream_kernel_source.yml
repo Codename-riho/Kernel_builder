@@ -150,10 +150,32 @@ jobs:
               cd work
               echo "::endgroup::"
               NEW=$(git rev-parse HEAD)
+
+              # --no-thin: pack berdiri sendiri (tanpa delta ke objek yang "dikira" sudah
+              # ada di remote). Penyebab umum "did not receive expected object" pada shallow clone.
+              push_mirror() { git push --force --no-thin "$TARGET_URL" "$1:refs/heads/${TARGET_BRANCH}"; }
+
               echo "::group::🚀 Push paksa (samakan dengan upstream)"
-              git push --force "$TARGET_URL" "HEAD:refs/heads/${TARGET_BRANCH}"
+              PUSHED=0
+              for try in 1 2 3; do
+                if push_mirror HEAD; then PUSHED=1; break; fi
+                echo "::warning::Push percobaan ${try}/3 gagal"
+                [ "$try" -lt 3 ] && sleep 20
+              done
+
+              if [ "$PUSHED" = 1 ]; then
+                NOTE="Branch target disamakan persis dengan upstream (force push)."
+              else
+                # Cadangan: commit tanpa parent dengan tree yang sama. Tidak ada batas shallow
+                # yang ikut terkirim, jadi pack lengkap. Isi file identik, hanya hash commit beda.
+                echo "::warning::Push biasa gagal 3x, memakai snapshot tanpa parent (isi sama dengan upstream)."
+                SRC=$(git rev-parse --short=12 HEAD)
+                SNAP=$(git commit-tree "HEAD^{tree}" -m "Mirror: snapshot ${SOURCE_BRANCH}@${SRC} dari ${SOURCE_REPO}")
+                push_mirror "$SNAP" || die "Push gagal juga dengan snapshot tanpa parent. Cek ukuran repo / batas GitHub."
+                NEW="$SNAP"
+                NOTE="Isi branch sama dengan upstream@${SRC}, tetapi sebagai snapshot 1 commit (push biasa gagal)."
+              fi
               echo "::endgroup::"
-              NOTE="Branch target disamakan persis dengan upstream (force push)."
               ;;
 
             fresh)
