@@ -1,4 +1,4 @@
-From d35a13baa694f76d8dfb3b326b1f84d00c07cb6c Mon Sep 17 00:00:00 2001
+From 0ece7f1c0d296015a71183d33ebcfc7379b68cb7 Mon Sep 17 00:00:00 2001
 From: Dyatz <Codename-riho@github.com>
 Date: Sun, 15 Nov 2026 21:49:10 +0000
 Subject: [PATCH] kernel: add multi-manager support (hard cap 2, signature
@@ -30,23 +30,21 @@ to be crowned at the same time.
 - allowlist.c: skip umount for every crowned manager
 - Kbuild: extended signature list, do not pin KSU_MANAGER_PACKAGE
 ---
- kernel/Kbuild                     |  17 +++-
- kernel/manager/apk_sign.c         | 166 ++++++++++++++++++++++++++++++--------
- kernel/manager/manager_identity.h | 166 +++++++++++++++++++++++++++++++++++---
- kernel/manager/throne_tracker.c   | 161 +++++++++++++++++++++++++++++++++++-
- kernel/manager/throne_tracker.h   |  14 ++++
+ kernel/Kbuild                     |  17 ++-
+ kernel/manager/apk_sign.c         | 166 +++++++++++++++++++++++-------
+ kernel/manager/manager_identity.h | 166 ++++++++++++++++++++++++++++--
+ kernel/manager/throne_tracker.c   | 161 ++++++++++++++++++++++++++++-
+ kernel/manager/throne_tracker.h   |  14 +++
  kernel/policy/allowlist.c         |   2 +-
  kernel/supercall/dispatch.c       |   5 +-
  kernel/supercall/supercall.c      |   6 +-
  8 files changed, 482 insertions(+), 55 deletions(-)
 
 diff --git a/kernel/Kbuild b/kernel/Kbuild
-index cf962401..a3c3987f 100644
+index cf96240..a3c3987 100644
 --- a/kernel/Kbuild
 +++ b/kernel/Kbuild
-@@ -220,10 +220,23 @@ KSU_NEW_DCACHE_FLUSH := $(shell grep -q __flush_dcache_area $(srctree)/arch/arm6
- $(info -- KernelSU-Next new DCACHE flush: $(KSU_NEW_DCACHE_FLUSH))
- 
+@@ -222,6 +222,19 @@ $(info -- KernelSU-Next new DCACHE flush: $(KSU_NEW_DCACHE_FLUSH))
  ifndef KSU_NEXT_MANAGER_LIST
 -# KSUN, pershoot
 -KSU_NEXT_MANAGER_LIST := 0x3e6:79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7,0x338:f26471a28031130362bce7eebffb9a0b8afc3095f163ce0c75a309f03b644a1f
@@ -68,15 +66,11 @@ index cf962401..a3c3987f 100644
 +override undefine KSU_MANAGER_PACKAGE
 +
  ifdef KSU_MANAGER_PACKAGE
- ccflags-y += -DKSU_MANAGER_PACKAGE=\"$(KSU_MANAGER_PACKAGE)\"
- $(info -- KernelSU-Next Manager package name: $(KSU_MANAGER_PACKAGE))
 diff --git a/kernel/manager/apk_sign.c b/kernel/manager/apk_sign.c
-index 327b3269..c6636aa7 100644
+index 327b326..c6636aa 100644
 --- a/kernel/manager/apk_sign.c
 +++ b/kernel/manager/apk_sign.c
-@@ -28,6 +28,12 @@ struct sdesc {
- 	char ctx[];
- };
+@@ -30,2 +30,8 @@ struct sdesc {
  
 +#define CERT_MAX_LENGTH 1024
 +
@@ -85,11 +79,7 @@ index 327b3269..c6636aa7 100644
 +#endif
 +
  static struct sdesc *init_sdesc(struct crypto_shash *alg)
- {
- 	struct sdesc *sdesc;
-@@ -96,8 +102,11 @@ static bool read_length_prefixed_end(struct file *fp, loff_t *pos, loff_t contai
- 	return true;
- }
+@@ -98,4 +104,7 @@ static bool read_length_prefixed_end(struct file *fp, loff_t *pos, loff_t contai
  
 -static bool check_block(struct file *fp, loff_t *pos, loff_t block_end, unsigned expected_size,
 -			const char *expected_sha256)
@@ -99,24 +89,18 @@ index 327b3269..c6636aa7 100644
 +static bool read_block_certificate(struct file *fp, loff_t *pos, loff_t block_end,
 +				   unsigned char *cert, unsigned int *cert_size)
  {
- 	loff_t signers_end, signer_end, signed_data_end, digests_end, certificates_end;
- 	u32 certificate_size;
-@@ -117,36 +126,21 @@ static bool check_block(struct file *fp, loff_t *pos, loff_t block_end, unsigned
- 	if (certificate_size > INT_MAX || certificate_size > (u64)(certificates_end - *pos))
- 		return false;
+@@ -119,6 +128,2 @@ static bool check_block(struct file *fp, loff_t *pos, loff_t block_end, unsigned
  
 -#define CERT_MAX_LENGTH 1024
 -	if (certificate_size != expected_size)
 -		return false;
 -
  	if (certificate_size > CERT_MAX_LENGTH) {
- 		pr_info("cert length overlimit\n");
- 		return false;
- 	}
+@@ -128,3 +133,2 @@ static bool check_block(struct file *fp, loff_t *pos, loff_t block_end, unsigned
  
 -	char cert[CERT_MAX_LENGTH];
  	if (!read_exact(fp, cert, certificate_size, pos, certificates_end))
- 		return false;
+@@ -132,19 +136,9 @@ static bool check_block(struct file *fp, loff_t *pos, loff_t block_end, unsigned
  
 -	unsigned char digest[SHA256_DIGEST_SIZE];
 -	if (ksu_sha256(cert, certificate_size, digest)) {
@@ -141,20 +125,12 @@ index 327b3269..c6636aa7 100644
 +					       unsigned char *cert,
 +					       unsigned int *cert_size)
  {
- 	unsigned char buffer[0x10] = { 0 };
- 	u32 cd_offset, cd_size;
-@@ -250,7 +244,7 @@ static __always_inline bool check_v2_signature(char *path,
- 
- 		if (id == 0x7109871au) {
+@@ -252,3 +246,3 @@ static __always_inline bool check_v2_signature(char *path,
  			v2_signing_blocks++;
 -			v2_signing_valid = check_block(fp, &pos, pair_end, expected_size, expected_sha256);
 +			v2_signing_valid = read_block_certificate(fp, &pos, pair_end, cert, cert_size);
  		} else if (id != 0x42726577u) { // APK verity padding
- 			// https://cs.android.com/android/platform/superproject/+/android-latest-release:tools/apksig/src/main/java/com/android/apksig/internal/apk/ApkSigningBlockUtils.java;l=102;drc=ebe4dfd4fd6550c949a6c7c2427484bf5e96500b
- #ifdef CONFIG_KSU_DEBUG
-@@ -328,26 +322,128 @@ int get_pkg_from_apk_dir_path(char *pkg, const char *path)
- 	return 0;
- }
+@@ -330,3 +324,43 @@ int get_pkg_from_apk_dir_path(char *pkg, const char *path)
  
 -bool is_manager_apk(char *path)
 +static bool parse_hex_uint(const char **pp, unsigned int *out)
@@ -199,9 +175,7 @@ index 327b3269..c6636aa7 100644
 +// is not part of the match (this also tolerates a mistyped size).
 +static bool manager_list_matches(const char *hash)
  {
- 	const char *p = KSU_NEXT_MANAGER_LIST;
- 
- 	while (*p) {
+@@ -336,16 +370,78 @@ bool is_manager_apk(char *path)
  		unsigned int size;
 -		char hash[65] = {0};
 +		char entry[SHA256_DIGEST_SIZE * 2 + 1];
@@ -291,22 +265,17 @@ index 327b3269..c6636aa7 100644
 +		pr_info("KernelSU: matched manager APK: %s (size=0x%x)\n", path, cert_size);
 +		return true;
  	}
- 
- 	return false;
 diff --git a/kernel/manager/manager_identity.h b/kernel/manager/manager_identity.h
-index 1268f443..c3f3dae3 100644
+index 1268f44..c3f3dae 100644
 --- a/kernel/manager/manager_identity.h
 +++ b/kernel/manager/manager_identity.h
-@@ -1,11 +1,24 @@
- #ifndef __KSU_H_MANAGER_IDENTITY
- #define __KSU_H_MANAGER_IDENTITY
+@@ -3,3 +3,5 @@
  
 +#include <linux/compiler.h>
  #include <linux/cred.h>
 +#include <linux/sched.h>
  #include <linux/types.h>
- 
- #define KSU_INVALID_APPID -1
+@@ -8,2 +10,13 @@
  #define KSU_PER_USER_RANGE 100000
 +// Multi-manager: at most 2 verified managers are active at once. Every manager
 +// has full root control, so the limit is a hard cap: it cannot be raised with a
@@ -320,11 +289,7 @@ index 1268f443..c3f3dae3 100644
 +#define KSU_FIRST_APP_APPID 10000
 +#define KSU_LAST_APP_APPID 19999
  
- #ifdef CONFIG_KSU_DISABLE_MANAGER
- static inline bool ksu_is_manager_appid_valid()
-@@ -36,37 +49,170 @@ static inline void ksu_set_manager_appid(uid_t appid)
- static inline void ksu_invalidate_manager_uid()
- {
+@@ -38,13 +51,53 @@ static inline void ksu_invalidate_manager_uid()
  }
 +
 +static inline bool ksu_add_manager_appid(uid_t appid)
@@ -383,8 +348,7 @@ index 1268f443..c3f3dae3 100644
 -    return unlikely(ksu_manager_appid == current_uid().val % KSU_PER_USER_RANGE);
 +    return ksu_manager_appid_count() > 0;
  }
- 
- static inline bool is_uid_manager(uid_t uid)
+@@ -53,13 +106,95 @@ static inline bool is_uid_manager(uid_t uid)
  {
 -    return unlikely(ksu_manager_appid == uid % KSU_PER_USER_RANGE);
 +    int i;
@@ -484,8 +448,7 @@ index 1268f443..c3f3dae3 100644
 +            WRITE_ONCE(ksu_manager_appids[i], KSU_INVALID_APPID);
 +    }
  }
- 
- static inline void ksu_invalidate_manager_uid()
+@@ -68,3 +203,14 @@ static inline void ksu_invalidate_manager_uid()
  {
 -    ksu_manager_appid = KSU_INVALID_APPID;
 +    int i;
@@ -501,15 +464,11 @@ index 1268f443..c3f3dae3 100644
 +    if (appid != KSU_INVALID_APPID)
 +        ksu_add_manager_appid(appid);
  }
- #endif
- 
 diff --git a/kernel/manager/throne_tracker.c b/kernel/manager/throne_tracker.c
-index 8642906d..559d80df 100644
+index 8642906..559d80d 100644
 --- a/kernel/manager/throne_tracker.c
 +++ b/kernel/manager/throne_tracker.c
-@@ -27,10 +27,46 @@
- 
- static DEFINE_MUTEX(throne_tracker_mutex);
+@@ -29,3 +29,10 @@ static DEFINE_MUTEX(throne_tracker_mutex);
  
 -uid_t ksu_manager_appid = KSU_INVALID_APPID;
 +#ifndef CONFIG_KSU_DISABLE_MANAGER
@@ -521,7 +480,7 @@ index 8642906d..559d80df 100644
 +static size_t last_pkg_count;
 +#endif
  
- #define DATA_PATH_LEN 384 // 384 is enough for /data/app/<package>/base.apk
+@@ -33,2 +40,31 @@ uid_t ksu_manager_appid = KSU_INVALID_APPID;
  
 +#ifndef CONFIG_KSU_DISABLE_MANAGER
 +// APK each crowned manager was verified against (same index as ksu_manager_appids).
@@ -553,11 +512,7 @@ index 8642906d..559d80df 100644
 +#endif
 +
  static char cached_manager_apk_path[DATA_PATH_LEN];
- 
- #define SYSTEM_PACKAGES_LIST_PATH "/data/system/packages.list"
-@@ -70,7 +106,17 @@ static void crown_manager(const char *apk, struct list_head *uid_data)
- 	list_for_each_entry (np, list, list) {
- 		if (strncmp(np->package, target_pkg, KSU_MAX_PACKAGE_NAME) == 0) {
+@@ -72,3 +108,13 @@ static void crown_manager(const char *apk, struct list_head *uid_data)
  			pr_info("Crowning manager: %s(uid=%d)\n", target_pkg, np->uid);
 -			ksu_set_manager_appid(np->uid);
 +			if (!ksu_add_manager_appid(np->uid)) {
@@ -572,11 +527,7 @@ index 8642906d..559d80df 100644
 +				}
 +			}
  			break;
- 		}
- 	}
-@@ -237,9 +283,11 @@ static void search_manager(const char *path, int depth, struct list_head *uid_da
- 			if (unlikely(!is_manager))
- 				goto skip_iterate;
+@@ -239,5 +285,7 @@ static void search_manager(const char *path, int depth, struct list_head *uid_da
  
 -			// Verified manager found, halt outer loop
 -			stop = 1;
@@ -586,11 +537,7 @@ index 8642906d..559d80df 100644
 +			if (ksu_manager_appid_count() >= KSU_MAX_MANAGERS)
 +				stop = 1;
  
- 		skip_iterate:
- 			list_del(&pos->list);
-@@ -265,6 +313,57 @@ static bool is_uid_exist(uid_t uid, char *package, void *data)
- 	return exist;
- }
+@@ -267,2 +315,53 @@ static bool is_uid_exist(uid_t uid, char *package, void *data)
  
 +#ifndef KSU_MANAGER_PACKAGE
 +// Re-check the signature of every crowned manager. A slot whose APK no longer
@@ -644,19 +591,11 @@ index 8642906d..559d80df 100644
 +#endif
 +
  static void track_throne_function(bool prune_only)
- {
- 	mutex_lock(&throne_tracker_mutex);
-@@ -346,6 +445,7 @@ static void track_throne_function(bool prune_only)
- 	if (prune_only)
- 		goto prune;
+@@ -348,2 +447,3 @@ static void track_throne_function(bool prune_only)
  
 +#ifdef KSU_MANAGER_PACKAGE
  	// first, check if manager_uid exist!
- 	uid_t manager_package_uid = KSU_INVALID_APPID;
- 	bool need_rescan = false;
-@@ -416,6 +516,59 @@ static void track_throne_function(bool prune_only)
- 		pr_info("Search manager finished\n");
- 	}
+@@ -418,2 +518,55 @@ static void track_throne_function(bool prune_only)
  
 +#else
 +	// Multi-manager: several verified managers can be crowned at once.
@@ -712,15 +651,11 @@ index 8642906d..559d80df 100644
 +#endif
 +
  prune:
- 	// then prune the allowlist
- 	ksu_prune_allowlist(is_uid_exist, &uid_list);
 diff --git a/kernel/manager/throne_tracker.h b/kernel/manager/throne_tracker.h
-index db648c23..e72200d2 100644
+index db648c2..e72200d 100644
 --- a/kernel/manager/throne_tracker.h
 +++ b/kernel/manager/throne_tracker.h
-@@ -21,11 +21,25 @@ static inline void track_throne(bool prune_only)
- {
-     (void)prune_only;
+@@ -23,2 +23,8 @@ static inline void track_throne(bool prune_only)
  }
 +
 +static inline bool ksu_manager_request(uid_t uid)
@@ -729,9 +664,7 @@ index db648c23..e72200d2 100644
 +    return false;
 +}
  #else
- void ksu_throne_tracker_init(void);
- 
- void ksu_throne_tracker_exit(void);
+@@ -28,2 +34,10 @@ void ksu_throne_tracker_exit(void);
  
 +/*
 + * Something outside the signature scan asks for uid to be the manager.
@@ -742,28 +675,20 @@ index db648c23..e72200d2 100644
 +bool ksu_manager_request(uid_t uid);
 +
  void track_throne(bool prune_only);
- 
- static inline void susfs_renew_uid_filters(void)
 diff --git a/kernel/policy/allowlist.c b/kernel/policy/allowlist.c
-index c54bcf7c..6c62ffda 100644
+index c54bcf7..6c62ffd 100644
 --- a/kernel/policy/allowlist.c
 +++ b/kernel/policy/allowlist.c
-@@ -295,7 +295,7 @@ bool ksu_uid_should_umount(uid_t uid)
-     struct app_profile *profile;
-     bool res;
+@@ -297,3 +297,3 @@ bool ksu_uid_should_umount(uid_t uid)
  #ifndef CONFIG_KSU_SUSFS
 -    if (likely(ksu_is_manager_appid_valid()) && unlikely(ksu_get_manager_appid() == uid % PER_USER_RANGE)) {
 +    if (likely(ksu_is_manager_appid_valid()) && unlikely(is_uid_manager(uid))) {
          // we should not umount on manager!
-         return false;
-     }
 diff --git a/kernel/supercall/dispatch.c b/kernel/supercall/dispatch.c
-index fb2d47ac..0dd6acad 100644
+index fb2d47a..0dd6aca 100644
 --- a/kernel/supercall/dispatch.c
 +++ b/kernel/supercall/dispatch.c
-@@ -356,8 +356,11 @@ static int do_uid_should_umount(void __user *arg)
- static int do_get_manager_appid(void __user *arg)
- {
+@@ -358,4 +358,7 @@ static int do_get_manager_appid(void __user *arg)
      struct ksu_get_manager_appid_cmd cmd;
 +    uid_t uid = current_uid().val;
  
@@ -772,23 +697,15 @@ index fb2d47ac..0dd6acad 100644
 +    // manager still recognizes itself; anyone else gets the first manager's id
 +    cmd.appid = is_uid_manager(uid) ? uid % KSU_PER_USER_RANGE : ksu_get_manager_appid();
  
-     if (copy_to_user(arg, &cmd, sizeof(cmd))) {
-         pr_err("get_manager_appid: copy_to_user failed\n");
 diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
-index b759f699..1232abea 100644
+index b759f69..1232abe 100644
 --- a/kernel/supercall/supercall.c
 +++ b/kernel/supercall/supercall.c
-@@ -18,6 +18,7 @@
- #include "util.h"
- #include "klog.h" // IWYU pragma: keep
+@@ -20,2 +20,3 @@
  #include "manager/manager_identity.h"
 +#include "manager/throne_tracker.h"
  
- #include "sulog/event.h"
- 
-@@ -147,8 +148,9 @@ int ksu_handle_toolkit_reboot(int magic2, unsigned int cmd, void __user *arg)
-         /* only root is allowed for this command */
-         if (current_uid().val != 0)
+@@ -149,4 +150,5 @@ int ksu_handle_toolkit_reboot(int magic2, unsigned int cmd, void __user *arg)
              return -EPERM;
 -        ksu_set_manager_appid(cmd);
 -        if (cmd == ksu_get_manager_appid()) {
@@ -796,5 +713,6 @@ index b759f699..1232abea 100644
 +         * verified) manager passes, anything else is refused and revoked */
 +        if (ksu_manager_request(cmd)) {
              if (copy_to_user(arg, &reply, sizeof(reply)))
-                 return -EFAULT;
-         }
+-- 
+2.43.0
+
