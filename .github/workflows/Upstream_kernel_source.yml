@@ -42,11 +42,7 @@ on:
 
 permissions:
   contents: write
-
-concurrency:
-  group: upstream-${{ github.repository }}-${{ inputs.target_branch || 'android13-5.15-lts' }}
-  cancel-in-progress: false
-
+  
 jobs:
   upstream:
     name: "🔄 Upstream Kernel Source"
