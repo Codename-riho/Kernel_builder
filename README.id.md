@@ -78,3 +78,6 @@ Dirilis di bawah [GNU General Public License v3.0](LICENCE).
 - Karya seni spanduk (banner) adalah milik pemilik aslinya.
 - [yougotme101](https://github.com/yougotme101/kernel_msm-5.15) Untuk pohon dasar MSM-5.15 yang luar biasa solid dan kerangka workflow nya
 - [topnotchfreaks](https://github.com/topnotchfreaks/kernel_msm-5.15) Untuk sinkronisasi cabang Codelinaro (CLO) yang brilian dan tambalan esensial yang mendorong performa kernel ini ke puncak maksimalnya.
+- [RapliVx](https://github.com/RapliVx) Untuk Base KSUN Multi Manager patch
+- [NotPichayut](https://github.com/NotPichayut) Untuk Base Kernel Spoofing Script 
+
