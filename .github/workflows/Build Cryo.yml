@@ -528,60 +528,40 @@ jobs:
             echo "⚔️ KSU_MANAGER=${KSU_MANAGER}"
             echo "🎯 KERNEL_VARIANT=${KERNEL_VARIANT}"
 
-      - name: "🚄 Porting BBRv3 + PLB (cherry-pick)"
+      - name: "🚄 Porting BBRv3 + PLB (patch)"
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
-          BBR3_SHA: 7bc9793d909f52f4a6cd45dd1381b2f200c18a7c
-          BBR3_REPO: https://github.com/topnotchfreaks/kernel_msm-5.15.git
+          PATCH: ${{ github.workspace }}/.github/Patches/bbrv3/bbrv3-plb-gki-clo-5_15.patch
         run: |
           set -euo pipefail
-          DEFCFG=arch/arm64/configs/unified_defconfig
 
-          echo "🔄 Menyiapkan Git untuk Porting"
-          git config user.name  "github-actions"
-          git config user.email "actions@github.com"
-          git config advice.mergeConflict false
-          git config advice.detachedHead false
+          [ -f "$PATCH" ] || { echo "::error::Patch tidak ditemukan: $PATCH"; exit 1; }
 
-          # Simpan perubahan step sebelumnya sebagai commit sementara.
-          # Saat keluar (sukses/gagal) HEAD dikembalikan ke semula, perubahan tetap ada di working tree.
-          BASE=$(git rev-parse HEAD)
-          trap 'git reset -q --mixed "$BASE" || true' EXIT
-          git add -A
-          git commit -q --allow-empty --no-verify -m "wip: snapshot sebelum porting BBRv3"
-
-          echo "📥 Mengambil BBRv3 dari repositori pihak ketiga"
-          git fetch -q --no-tags --depth=2 "$BBR3_REPO" "$BBR3_SHA"
-
-          echo "⚙️ Melakukan Cherry-Pick BBRv3"
-          # -n: tanpa commit. Konflik defconfig di GKI diharapkan (file itu tidak ada di sana).
-          git cherry-pick -n "$BBR3_SHA" >/tmp/bbr3-pick.log 2>&1 || true
-          grep -E 'CONFLICT|Auto-merging' /tmp/bbr3-pick.log | sed 's/^/  /' || true
-
-          # defconfig tidak dipakai (config diatur lewat scripts/config): kembalikan ke keadaan HEAD
-          if git cat-file -e "HEAD:$DEFCFG" 2>/dev/null; then
-            git checkout -q HEAD -- "$DEFCFG"
-          else
-            git rm -f -q --ignore-unmatch -- "$DEFCFG"
+          # Sudah terpasang (mis. re-run)? lewati.
+          if patch -p1 -R --dry-run -s -f --no-backup-if-mismatch < "$PATCH" >/dev/null 2>&1; then
+            echo "ℹ️ BBRv3 sudah terpasang, dilewati"
+            exit 0
           fi
 
-          # Konflik yang tersisa = konflik sungguhan: batalkan porting, tampilkan daftar file
-          UNMERGED=$(git diff --name-only --diff-filter=U || true)
-          if [ -n "$UNMERGED" ]; then
-            echo "::error::Porting BBRv3 gagal, konflik pada file berikut:"
-            echo "$UNMERGED" | sed 's/^/  - /'
-            git reset -q --hard HEAD     # kembali ke snapshot (perubahan step sebelumnya tetap aman)
+          echo "🔎 Dry-run patch BBRv3"
+          patch -p1 --dry-run -s -f --no-backup-if-mismatch < "$PATCH" \
+            || { echo "::error::Patch BBRv3 tidak cocok dengan tree ini"; exit 1; }
+
+          echo "⚙️ Menerapkan patch BBRv3 + PLB"
+          patch -p1 -s -f --no-backup-if-mismatch < "$PATCH"
+
+          # Hanya .rej yang menandakan kegagalan (fuzz/offset normal dan tidak meninggalkan .orig)
+          if find . -name '*.rej' -print -quit | grep -q .; then
+            echo "::error::Ada hunk yang gagal (.rej)"
+            find . -name '*.rej'
             exit 1
           fi
 
           for f in net/ipv4/tcp_bbr3.c net/ipv4/tcp_plb.c; do
-            [ -f "$f" ] || { echo "::error::$f tidak terbentuk setelah cherry-pick"; exit 1; }
+            [ -f "$f" ] || { echo "::error::$f tidak terbentuk setelah patch"; exit 1; }
           done
-          if git grep -nE '^(<<<<<<<|>>>>>>>) ' -- net include >/dev/null 2>&1; then
-            echo "::error::masih ada penanda konflik di net/ atau include/"; exit 1
-          fi
           echo "✅ BBRv3 + PLB terpasang"
-
+    
       - name: "💉 Inject Kprofiles + set default mode"
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
