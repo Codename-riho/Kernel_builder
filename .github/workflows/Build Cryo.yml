@@ -535,24 +535,71 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Repo ini tidak di-checkout di runner, jadi patch diunduh lewat raw URL
           PATCH="${RUNNER_TEMP:-/tmp}/bbrv3-plb.patch"
+          APPLY_LOG="${RUNNER_TEMP:-/tmp}/bbrv3-apply.log"
+
+          echo "::group::ℹ️ Informasi target"
+          echo "📂 Direktori kernel : $(pwd)"
+          echo "🏷️  Versi kernel     : $(make -s kernelversion 2>/dev/null || echo 'tidak diketahui')"
+          echo "🧬 Base             : ${{ matrix.base }}"
+          echo "🔗 Sumber patch     : $PATCH_URL"
+          echo "::endgroup::"
+
+          # ── 1) Unduh patch (repo ini tidak di-checkout di runner) ──
+          echo "📥 [1/5] Mengunduh patch"
           curl -fsSL --retry 3 --retry-delay 2 -o "$PATCH" "$PATCH_URL" \
             || { echo "::error::Gagal mengunduh patch: $PATCH_URL"; exit 1; }
           [ -s "$PATCH" ] || { echo "::error::Patch kosong: $PATCH_URL"; exit 1; }
 
-          # Sudah terpasang (mis. re-run)? lewati.
+          P_SIZE=$(wc -c < "$PATCH")
+          P_SHA=$(sha256sum "$PATCH" | cut -d' ' -f1)
+          P_FILES=$(grep -c '^diff --git' "$PATCH" || true)
+          P_HUNKS=$(grep -c '^@@ ' "$PATCH" || true)
+          P_ADD=$(grep -c '^+[^+]' "$PATCH" || true)
+          P_DEL=$(grep -c '^-[^-]' "$PATCH" || true)
+          echo "   • Ukuran   : $P_SIZE byte"
+          echo "   • SHA-256  : $P_SHA"
+          echo "   • Isi      : $P_FILES file, $P_HUNKS hunk, +$P_ADD / -$P_DEL baris"
+
+          echo "::group::📄 Daftar file yang disentuh patch"
+          grep '^diff --git' "$PATCH" | awk '{print "   • " substr($4,3)}'
+          echo "::endgroup::"
+
+          # ── 2) Cek apakah sudah terpasang (mis. re-run) ──
+          echo "🔁 [2/5] Mengecek apakah patch sudah terpasang"
           if patch -p1 -R --dry-run -s -f --no-backup-if-mismatch < "$PATCH" >/dev/null 2>&1; then
-            echo "ℹ️ BBRv3 sudah terpasang, dilewati"
+            echo "ℹ️ BBRv3 sudah terpasang di tree ini, step dilewati"
             exit 0
           fi
+          echo "   • Belum terpasang, lanjut"
 
-          echo "🔎 Dry-run patch BBRv3"
-          patch -p1 --dry-run -s -f --no-backup-if-mismatch < "$PATCH" \
-            || { echo "::error::Patch BBRv3 tidak cocok dengan tree ini"; exit 1; }
+          # ── 3) Dry-run ──
+          echo "🔎 [3/5] Dry-run patch"
+          echo "::group::Output dry-run"
+          if ! patch -p1 --dry-run -f --no-backup-if-mismatch < "$PATCH" 2>&1 | tee "$APPLY_LOG"; then
+            echo "::endgroup::"
+            echo "::error::Patch BBRv3 tidak cocok dengan tree ini (lihat output dry-run di atas)"
+            exit 1
+          fi
+          echo "::endgroup::"
 
-          echo "⚙️ Menerapkan patch BBRv3 + PLB"
-          patch -p1 -s -f --no-backup-if-mismatch < "$PATCH"
+          # ── 4) Terapkan ──
+          echo "⚙️ [4/5] Menerapkan patch BBRv3 + PLB"
+          echo "::group::Output patch"
+          patch -p1 -f --no-backup-if-mismatch < "$PATCH" 2>&1 | tee "$APPLY_LOG"
+          echo "::endgroup::"
+
+          N_PATCHED=$(grep -c '^patching file' "$APPLY_LOG" || true)
+          N_FUZZ=$(grep -c 'with fuzz' "$APPLY_LOG" || true)
+          N_OFFSET=$(grep -c 'offset' "$APPLY_LOG" || true)
+          echo "   • File dipatch : $N_PATCHED"
+          echo "   • Hunk offset  : $N_OFFSET (normal: konteks bergeser beberapa baris)"
+          echo "   • Hunk fuzz    : $N_FUZZ (normal bila kecil: konteks sedikit berbeda)"
+          if [ "$N_FUZZ" -gt 0 ]; then
+            echo "::group::Hunk yang diterapkan dengan fuzz"
+            grep 'with fuzz' "$APPLY_LOG" | sed 's/^/   • /'
+            echo "::endgroup::"
+          fi
 
           # Hanya .rej yang menandakan kegagalan (fuzz/offset normal dan tidak meninggalkan .orig)
           if find . -name '*.rej' -print -quit | grep -q .; then
@@ -561,9 +608,25 @@ jobs:
             exit 1
           fi
 
+          # ── 5) Verifikasi hasil ──
+          echo "✅ [5/5] Verifikasi hasil"
           for f in net/ipv4/tcp_bbr3.c net/ipv4/tcp_plb.c; do
             [ -f "$f" ] || { echo "::error::$f tidak terbentuk setelah patch"; exit 1; }
+            echo "   • $f ($(wc -l < "$f") baris)"
           done
+          grep -q 'tcp_bbr3' net/ipv4/Makefile \
+            || { echo "::error::net/ipv4/Makefile tidak memuat tcp_bbr3"; exit 1; }
+          grep -q 'config TCP_CONG_BBR3' net/ipv4/Kconfig \
+            || { echo "::error::net/ipv4/Kconfig tidak memuat TCP_CONG_BBR3"; exit 1; }
+          echo "   • Makefile : tcp_bbr3 / tcp_plb terdaftar"
+          echo "   • Kconfig  : config TCP_CONG_BBR3 tersedia"
+
+          {
+            echo "### 🚄 BBRv3 + PLB (${{ matrix.base }})"
+            echo "- Patch: \`$(basename "$PATCH_URL")\` (\`${P_SHA:0:12}\`)"
+            echo "- File dipatch: $N_PATCHED | hunk offset: $N_OFFSET | hunk fuzz: $N_FUZZ"
+          } >> "$GITHUB_STEP_SUMMARY"
+
           echo "✅ BBRv3 + PLB terpasang"
     
       - name: "💉 Inject Kprofiles + set default mode"
