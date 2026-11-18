@@ -2205,10 +2205,12 @@ jobs:
           set -euo pipefail
           trap 'echo "💾 Sisa disk:"; df -h / | tail -n 1' EXIT
           clang --version | head -n1
-          make ARCH=arm64 LLVM=1 O=out "$DEFCONFIG_NAME"
+          # Tool host (resolve_btfids, dtc, dll.) pakai gcc Ubuntu; kernel tetap dikompilasi clang custom
+          HOST="HOSTCC=gcc HOSTCXX=g++ HOSTLD=ld HOSTAR=ar"
+          make ARCH=arm64 LLVM=1 $HOST O=out "$DEFCONFIG_NAME"
           # samakan dengan jalur build.sh (LTO=full)
           scripts/config --file out/.config -d LTO_CLANG_THIN -e LTO_CLANG_FULL
-          make ARCH=arm64 LLVM=1 O=out olddefconfig
+          make ARCH=arm64 LLVM=1 $HOST O=out olddefconfig
 
           # Pastikan config penting tidak hilang setelah resolusi dependensi
           CHECK_LIST="CONFIG_LTO_CLANG_FULL CONFIG_TCP_CONG_BBR3 CONFIG_ZRAM_DEF_COMP_LZ4 CONFIG_CRYPTO_LZO CONFIG_DEBUG_INFO_BTF"
@@ -2246,7 +2248,7 @@ jobs:
           esac
 
           # ── Build ──
-          make ARCH=arm64 LLVM=1 O=out -j"$(nproc --all)" Image 2>&1 | tee "$WORK_DIR/build_full.log"
+          make ARCH=arm64 LLVM=1 $HOST O=out -j"$(nproc --all)" Image 2>&1 | tee "$WORK_DIR/build_full.log"
                                   
       - name: "🚨 Kumpulkan Log Error (Jika Gagal)"
         if: failure()
