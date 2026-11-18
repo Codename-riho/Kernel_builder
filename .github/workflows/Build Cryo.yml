@@ -531,11 +531,15 @@ jobs:
       - name: "🚄 Porting BBRv3 + PLB (patch)"
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
-          PATCH: ${{ github.workspace }}/.github/Patches/bbrv3/bbrv3-plb-gki-clo-5_15.patch
+          PATCH_URL: https://raw.githubusercontent.com/Codename-riho/Kernel_builder/refs/heads/Builders/.github/Patches/bbrv3/bbrv3-plb-gki-clo-5_15.patch
         run: |
           set -euo pipefail
 
-          [ -f "$PATCH" ] || { echo "::error::Patch tidak ditemukan: $PATCH"; exit 1; }
+          # Repo ini tidak di-checkout di runner, jadi patch diunduh lewat raw URL
+          PATCH="${RUNNER_TEMP:-/tmp}/bbrv3-plb.patch"
+          curl -fsSL --retry 3 --retry-delay 2 -o "$PATCH" "$PATCH_URL" \
+            || { echo "::error::Gagal mengunduh patch: $PATCH_URL"; exit 1; }
+          [ -s "$PATCH" ] || { echo "::error::Patch kosong: $PATCH_URL"; exit 1; }
 
           # Sudah terpasang (mis. re-run)? lewati.
           if patch -p1 -R --dry-run -s -f --no-backup-if-mismatch < "$PATCH" >/dev/null 2>&1; then
