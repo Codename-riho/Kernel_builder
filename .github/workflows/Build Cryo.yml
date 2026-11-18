@@ -2248,7 +2248,12 @@ jobs:
           esac
 
           # ── Build ──
-          make ARCH=arm64 LLVM=1 $HOST O=out -j"$(nproc --all)" Image 2>&1 | tee "$WORK_DIR/build_full.log"
+          # pahole >= 1.25 otomatis menambah --skip_encoding_btf_inconsistent_proto dan --btf_gen_optimized
+          # (lihat scripts/pahole-flags.sh). Dengan LTO full dua flag itu membuang banyak fungsi dari BTF
+          # sehingga resolve_btfids memberi WARN "unresolved symbol". Di sini keduanya dilewati;
+          # --skip_encoding_btf_enum64 tetap dipertahankan karena BTF 5.15 belum mengenal enum64.
+          PAHOLE_FLAGS="--btf_gen_floats --skip_encoding_btf_enum64"
+          make ARCH=arm64 LLVM=1 $HOST PAHOLE_FLAGS="$PAHOLE_FLAGS" O=out -j"$(nproc --all)" Image 2>&1 | tee "$WORK_DIR/build_full.log"
                                   
       - name: "🚨 Kumpulkan Log Error (Jika Gagal)"
         if: failure()
