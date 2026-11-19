@@ -2188,28 +2188,62 @@ jobs:
       - name: 🌡️ Patch thermal bind clamp
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         run: |
-          python3 - <<'EOF'
-          path = "drivers/thermal/thermal_core.c"
-          print(f"🔍 Membaca {path}...")
+          set -euo pipefail
+          T=$(mktemp -d)
+          trap 'rm -rf "$T"' EXIT
+          cat > "$T/p.rs" <<'EOF'
+          #![forbid(unsafe_code)]
+          use std::{fs, process};
 
-          with open(path) as f:
-              src = f.read()
+          const PATH: &str = "drivers/thermal/thermal_core.c";
+          const OLD: &[u8] = b"\tif (lower > upper || upper > max_state)\n\t\treturn -EINVAL;\n";
+          const NEW: &[u8] = b"\tif (upper > max_state)\n\t\tupper = max_state;\n\tif (lower > upper)\n\t\tlower = upper;\n";
 
-          old = ("\tif (lower > upper || upper > max_state)\n"
-                 "\t\treturn -EINVAL;\n")
+          fn positions(h: &[u8], n: &[u8]) -> Vec<usize> {
+              h.windows(n.len())
+                  .enumerate()
+                  .filter(|(_, w)| *w == n)
+                  .map(|(i, _)| i)
+                  .take(2)
+                  .collect()
+          }
 
-          new = ("\tif (upper > max_state)\n"
-                 "\t\tupper = max_state;\n"
-                 "\tif (lower > upper)\n"
-                 "\t\tlower = upper;\n")
+          fn run() -> std::io::Result<i32> {
+              let src = fs::read(PATH)?;
+              match positions(&src, OLD).as_slice() {
+                  [i] => {
+                      let mut out = Vec::with_capacity(src.len() + NEW.len());
+                      out.extend_from_slice(&src[..*i]);
+                      out.extend_from_slice(NEW);
+                      out.extend_from_slice(&src[*i + OLD.len()..]);
 
-          assert src.count(old) == 1, "❌ pattern not found / tidak unik"
+                      let tmp = format!("{PATH}.tmp");
+                      fs::write(&tmp, &out)?;
+                      fs::set_permissions(&tmp, fs::metadata(PATH)?.permissions())?;
+                      fs::rename(&tmp, PATH)?; // atomik
+                      println!("✅ Patch thermal clamp berhasil diterapkan!");
+                      Ok(0)
+                  }
+                  [] if positions(&src, NEW).len() == 1 => {
+                      println!("ℹ️ Sudah dipatch, dilewati");
+                      Ok(0)
+                  }
+                  _ => {
+                      eprintln!("❌ pattern not found / tidak unik");
+                      Ok(1)
+                  }
+              }
+          }
 
-          with open(path, "w") as f:
-              f.write(src.replace(old, new, 1))
-
-          print("✅ Patch thermal clamp berhasil diterapkan!")
+          fn main() {
+              process::exit(run().unwrap_or_else(|e| {
+                  eprintln!("❌ {e}");
+                  1
+              }));
+          }
           EOF
+          rustc --edition 2021 -C opt-level=0 -C debuginfo=0 "$T/p.rs" -o "$T/p"
+          "$T/p"
                       
       - name: "🔨 Build kernel (android-tools)"
         if: ${{ env.TOOLCHAIN_TYPE == 'android-tools' }}
