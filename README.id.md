@@ -89,8 +89,6 @@ Proyek ini berdiri di atas karya banyak pihak. Terima kasih kepada semua yang te
 - [Baka-SU/BakaSU](https://github.com/Baka-SU/BakaSU) varian manager (default)
 - [SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra) varian manager, termasuk KPM
 - [susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu) (simonpunk) fitur SUSFS
-- [RapliVx](https://github.com/RapliVx) Untuk basis patch KSUN Multi Manager
-- [NotPichayut](https://github.com/NotPichayut) Untuk basis script Kernel Version Spoof
 
 **Fitur dan patch kernel**
 - **TCP BBRv3 + PLB:** tim Google BBR (Neal Cardwell, Yuchung Cheng, Soheil Hassas Yeganeh, Van Jacobson, dan lainnya) [google/bbr](https://github.com/google/bbr); di-backport lewat [WildKernels/kernel_patches](https://github.com/WildKernels/kernel_patches), dengan port oleh yougotme101 dan topnotchfreaks
@@ -98,6 +96,8 @@ Proyek ini berdiri di atas karya banyak pihak. Terima kasih kepada semua yang te
 - [vc-teahouse/Baseband-guard](https://github.com/vc-teahouse/Baseband-guard) Baseband-guard
 - [maxsteeel/nomount](https://github.com/maxsteeel/nomount) nomount
 - [ravindu644/Droidspaces-OSS](https://github.com/ravindu644/Droidspaces-OSS) patch kernel GKI untuk Droidspaces
+- [RapliVx](https://github.com/RapliVx) Untuk basis patch KSUN Multi Manager
+- [NotPichayut](https://github.com/NotPichayut) Untuk basis script Kernel Version Spoof
 
 **Toolchain dan alat build**
 - Google AOSP Clang (`android-tools`, `build/build.sh`)
