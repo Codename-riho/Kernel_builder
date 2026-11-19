@@ -74,7 +74,7 @@ on:
        description: "Add droidspaces proper support?"
        required: true
        type: boolean
-       default: false   
+       default: true   
       susfsSupport:
         description: "Add SUSFS Implementation?"
         required: true
@@ -121,7 +121,7 @@ jobs:
       # default aman untuk schedule + manual run
       KERNEL_VARIANT: "${{ inputs.kernel_variant || 'all' }}"   # all | ksu-gki | ksu-clo | noksu-gki | noksu-clo | ksu-all | noksu-all
       TOOLCHAIN_TYPE: "${{ inputs.toolchain_type || 'android-tools' }}"
-      DROIDSPACES_SUPPORT: "${{ inputs.droidspaces_support && 'true' || 'false' }}"   # bawaan: mati
+      DROIDSPACES_SUPPORT: "${{ inputs.droidspaces_support && 'false' || 'true' }}"   # bawaan: aktif
       SUSFS_SUPPORT: "${{ format('{0}', inputs.susfsSupport) == 'false' && 'false' || 'true' }}"   # bawaan: aktif
       KSU_MANAGER: "${{ inputs.ksu_manager || 'BakaSU' }}"
       KSU_REF: "${{ inputs.ksu_ref || '' }}"
