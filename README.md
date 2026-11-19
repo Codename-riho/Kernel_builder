@@ -70,14 +70,40 @@ Flashing a custom kernel can cause boot loops or data loss. Back up your data an
 
 Released under the [GNU General Public License v3.0](LICENCE).
 
+Third-party code and patches keep their original licenses (for example the Linux kernel is GPL-2.0, and TCP BBRv3 is dual BSD/GPL). See the credits below for their sources.
+
 ## 🙏 Credits
 
-- [KernelSU-Next](https://github.com/KernelSU-Next/KernelSU-Next) and the KernelSU project, which also has a great many variants
-- [susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu)  SUSFS feature 
-- [AnyKernel3](https://github.com/osm0sis/AnyKernel3) as a framework that enables this kernel to be flashed optimally
-- Banner artwork belongs to its original owner.
-- [yougotme101](https://github.com/yougotme101/kernel_msm-5.15) For the incredibly solid MSM-5.15 base tree and the workflow framework
-- [topnotchfreaks](https://github.com/topnotchfreaks/kernel_msm-5.15) For the brilliant Codelinaro (CLO) branch synchronization and the essential patches that push this kernel's performance to its absolute peak.
-- [RapliVx](https://github.com/RapliVx) For Base KSUN Multi Manager Script
-- [NotPichayut](https://github.com/NotPichayut) For Base Kernel Version Spoof Script
+This project stands on the work of many others. Thank you to everyone below.
 
+**Kernel sources**
+- [Google AOSP `common` (android13-5.15)](https://android.googlesource.com/kernel/common/) GKI base source
+- CodeLinaro (CLO) msm-5.15 Qualcomm vendor base source
+- [MiCode/Xiaomi_Kernel_OpenSource](https://github.com/MiCode/Xiaomi_Kernel_OpenSource) Xiaomi kernel source
+- [yougotme101](https://github.com/yougotme101/kernel_msm-5.15) For the incredibly solid MSM-5.15 base tree and the workflow framework
+- [topnotchfreaks](https://github.com/topnotchfreaks/kernel_msm-5.15) For the brilliant Codelinaro (CLO) branch synchronization, and [kernel_patches](https://github.com/topnotchfreaks/kernel_patches) (gki-fixup and localversion patches) that push this kernel's performance to its absolute peak
+
+**Root and manager**
+- [KernelSU](https://github.com/tiann/KernelSU) (tiann) and [KernelSU-Next](https://github.com/KernelSU-Next/KernelSU-Next), the base of this project, which also has a great many variants
+- [pershoot/KernelSU-Next](https://github.com/pershoot/KernelSU-Next) KernelSU-Next fork used as a manager variant
+- [Baka-SU/BakaSU](https://github.com/Baka-SU/BakaSU) manager variant (default)
+- [SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra) manager variant, including KPM
+- [susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu) (simonpunk) SUSFS feature
+- [RapliVx](https://github.com/RapliVx) For the base KSUN Multi Manager patch
+- [NotPichayut](https://github.com/NotPichayut) For the base Kernel Version Spoof script
+
+**Kernel features and patches**
+- **TCP BBRv3 + PLB:** the Google BBR team (Neal Cardwell, Yuchung Cheng, Soheil Hassas Yeganeh, Van Jacobson and others) [google/bbr](https://github.com/google/bbr); backported via [WildKernels/kernel_patches](https://github.com/WildKernels/kernel_patches), with ports by yougotme101 and topnotchfreaks
+- [dakkshesh07/Kprofiles](https://github.com/dakkshesh07/Kprofiles) Kprofiles
+- [vc-teahouse/Baseband-guard](https://github.com/vc-teahouse/Baseband-guard) Baseband-guard
+- [maxsteeel/nomount](https://github.com/maxsteeel/nomount) nomount
+- [ravindu644/Droidspaces-OSS](https://github.com/ravindu644/Droidspaces-OSS) Droidspaces GKI kernel patches
+
+**Toolchain and build tools**
+- Google AOSP Clang (`android-tools`, `build/build.sh`)
+- [Neutron-Toolchains/antman](https://github.com/Neutron-Toolchains/antman), [XSans0/WeebX-Clang](https://github.com/XSans0/WeebX-Clang), [greenforce-project/greenforce_clang](https://github.com/greenforce-project/greenforce_clang), [ZyCromerZ/Clang](https://github.com/ZyCromerZ/Clang) custom Clang toolchains
+- [AnyKernel3](https://github.com/osm0sis/AnyKernel3) (osm0sis) the framework that lets this kernel be flashed optimally
+- [pierotofy/set-swap-space](https://github.com/pierotofy/set-swap-space) GitHub Action for swap space
+
+**Other**
+- Banner artwork belongs to its original artist.

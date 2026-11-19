@@ -70,14 +70,40 @@ Memasang kernel kustom bisa menyebabkan bootloop atau kehilangan data. Cadangkan
 
 Dirilis di bawah [GNU General Public License v3.0](LICENCE).
 
+Kode dan patch pihak ketiga tetap memakai lisensi aslinya (misalnya kernel Linux GPL-2.0, dan TCP BBRv3 dual BSD/GPL). Lihat kredit di bawah untuk sumbernya.
+
 ## 🙏 Kredit
 
-- [KernelSU-Next](https://github.com/KernelSU-Next/KernelSU-Next) dan proyek KernelSU, yang juga memiliki banyak sekali varian
-- [susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu) Fitur SUSFS
-- [AnyKernel3](https://github.com/osm0sis/AnyKernel3) sebagai kerangka kerja yang memungkinkan kernel ini di-flash secara optimal
-- Karya seni spanduk (banner) adalah milik pemilik aslinya.
-- [yougotme101](https://github.com/yougotme101/kernel_msm-5.15) Untuk pohon dasar MSM-5.15 yang luar biasa solid dan kerangka workflow nya
-- [topnotchfreaks](https://github.com/topnotchfreaks/kernel_msm-5.15) Untuk sinkronisasi cabang Codelinaro (CLO) yang brilian dan tambalan esensial yang mendorong performa kernel ini ke puncak maksimalnya.
-- [RapliVx](https://github.com/RapliVx) Untuk Base KSUN Multi Manager patch
-- [NotPichayut](https://github.com/NotPichayut) Untuk Base Kernel Spoofing Script 
+Proyek ini berdiri di atas karya banyak pihak. Terima kasih kepada semua yang tercantum di bawah.
 
+**Source kernel**
+- [Google AOSP `common` (android13-5.15)](https://android.googlesource.com/kernel/common/) source dasar GKI
+- CodeLinaro (CLO) msm-5.15 source dasar vendor Qualcomm
+- [MiCode/Xiaomi_Kernel_OpenSource](https://github.com/MiCode/Xiaomi_Kernel_OpenSource) source kernel Xiaomi
+- [yougotme101](https://github.com/yougotme101/kernel_msm-5.15) Untuk pohon dasar MSM-5.15 yang luar biasa solid dan kerangka workflow-nya
+- [topnotchfreaks](https://github.com/topnotchfreaks/kernel_msm-5.15) Untuk sinkronisasi cabang Codelinaro (CLO) yang brilian, serta [kernel_patches](https://github.com/topnotchfreaks/kernel_patches) (patch gki-fixup dan localversion) yang mendorong performa kernel ini ke puncak maksimalnya
+
+**Root dan manager**
+- [KernelSU](https://github.com/tiann/KernelSU) (tiann) dan [KernelSU-Next](https://github.com/KernelSU-Next/KernelSU-Next), dasar proyek ini, yang juga memiliki banyak sekali varian
+- [pershoot/KernelSU-Next](https://github.com/pershoot/KernelSU-Next) fork KernelSU-Next yang dipakai sebagai varian manager
+- [Baka-SU/BakaSU](https://github.com/Baka-SU/BakaSU) varian manager (default)
+- [SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra) varian manager, termasuk KPM
+- [susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu) (simonpunk) fitur SUSFS
+- [RapliVx](https://github.com/RapliVx) Untuk basis patch KSUN Multi Manager
+- [NotPichayut](https://github.com/NotPichayut) Untuk basis script Kernel Version Spoof
+
+**Fitur dan patch kernel**
+- **TCP BBRv3 + PLB:** tim Google BBR (Neal Cardwell, Yuchung Cheng, Soheil Hassas Yeganeh, Van Jacobson, dan lainnya) [google/bbr](https://github.com/google/bbr); di-backport lewat [WildKernels/kernel_patches](https://github.com/WildKernels/kernel_patches), dengan port oleh yougotme101 dan topnotchfreaks
+- [dakkshesh07/Kprofiles](https://github.com/dakkshesh07/Kprofiles) Kprofiles
+- [vc-teahouse/Baseband-guard](https://github.com/vc-teahouse/Baseband-guard) Baseband-guard
+- [maxsteeel/nomount](https://github.com/maxsteeel/nomount) nomount
+- [ravindu644/Droidspaces-OSS](https://github.com/ravindu644/Droidspaces-OSS) patch kernel GKI untuk Droidspaces
+
+**Toolchain dan alat build**
+- Google AOSP Clang (`android-tools`, `build/build.sh`)
+- [Neutron-Toolchains/antman](https://github.com/Neutron-Toolchains/antman), [XSans0/WeebX-Clang](https://github.com/XSans0/WeebX-Clang), [greenforce-project/greenforce_clang](https://github.com/greenforce-project/greenforce_clang), [ZyCromerZ/Clang](https://github.com/ZyCromerZ/Clang) toolchain Clang kustom
+- [AnyKernel3](https://github.com/osm0sis/AnyKernel3) (osm0sis) kerangka kerja yang memungkinkan kernel ini di-flash secara optimal
+- [pierotofy/set-swap-space](https://github.com/pierotofy/set-swap-space) GitHub Action untuk swap
+
+**Lainnya**
+- Karya seni spanduk (banner) adalah milik seniman aslinya.
