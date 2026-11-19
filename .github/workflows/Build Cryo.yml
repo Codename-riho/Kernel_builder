@@ -538,6 +538,18 @@ jobs:
           PATCH="${RUNNER_TEMP:-/tmp}/bbrv3-plb.patch"
           APPLY_LOG="${RUNNER_TEMP:-/tmp}/bbrv3-apply.log"
 
+          # File info konfigurasi (bukan binary kernel). Format pipe-delimited,
+          # dirangkum bersama config_check.txt & ksu_info.txt di job Package Kernels.
+          BBR_INFO="${WORK_DIR}/bbr_info.txt"
+          write_info() {
+            local status="$1" patched="${2:--}" offset="${3:--}" fuzz="${4:--}"
+            printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+              "${{ env.KERNEL_TAG }}" "${{ matrix.base }}" "$(basename "$PATCH_URL")" \
+              "${P_SHA:-?}" "${P_SIZE:-?}" "${P_FILES:-?}" "${P_HUNKS:-?}" \
+              "${P_ADD:-?}" "${P_DEL:-?}" "$patched" "$offset" "$fuzz" "$status" \
+              > "$BBR_INFO"
+          }
+
           echo "::group::ℹ️ Informasi target"
           echo "📂 Direktori kernel : $(pwd)"
           echo "🏷️  Versi kernel     : $(make -s kernelversion 2>/dev/null || echo 'tidak diketahui')"
@@ -569,6 +581,7 @@ jobs:
           echo "🔁 [2/5] Mengecek apakah patch sudah terpasang"
           if patch -p1 -R --dry-run -s -f --no-backup-if-mismatch < "$PATCH" >/dev/null 2>&1; then
             echo "ℹ️ BBRv3 sudah terpasang di tree ini, step dilewati"
+            write_info "already-applied" 0 0 0
             exit 0
           fi
           echo "   • Belum terpasang, lanjut"
@@ -621,12 +634,8 @@ jobs:
           echo "   • Makefile : tcp_bbr3 / tcp_plb terdaftar"
           echo "   • Kconfig  : config TCP_CONG_BBR3 tersedia"
 
-          {
-            echo "### 🚄 BBRv3 + PLB (${{ matrix.base }})"
-            echo "- Patch: \`$(basename "$PATCH_URL")\` (\`${P_SHA:0:12}\`)"
-            echo "- File dipatch: $N_PATCHED | hunk offset: $N_OFFSET | hunk fuzz: $N_FUZZ"
-          } >> "$GITHUB_STEP_SUMMARY"
-
+          write_info "applied" "$N_PATCHED" "$N_OFFSET" "$N_FUZZ"
+          echo "📄 Info BBRv3 + PLB disimpan di $BBR_INFO (dirangkum di job Package Kernels)"
           echo "✅ BBRv3 + PLB terpasang"
     
       - name: "💉 Inject Kprofiles + set default mode"
@@ -2373,6 +2382,7 @@ jobs:
           path: |
             ${{ env.WORK_DIR }}/config_check.txt
             ${{ env.WORK_DIR }}/ksu_info.txt
+            ${{ env.WORK_DIR }}/bbr_info.txt
           retention-days: 1
           if-no-files-found: ignore
           
@@ -2438,11 +2448,19 @@ jobs:
 
       - name: "🧩 Ringkasan konfigurasi kernel"
         if: needs.build-kernels.result == 'success'
+        id: summary
         run: |
+          set -euo pipefail
           VARIANTS=$(find ./artifacts -mindepth 1 -maxdepth 1 -type d -name '*-kernel' -printf '%f\n' 2>/dev/null \
             | sed 's/-kernel$//' | sort | paste -sd, - | sed 's/,/, /g')
           CHECKS=$(find ./artifacts -type f -name config_check.txt 2>/dev/null | sort)
           KSU_INFOS=$(find ./artifacts -type f -name ksu_info.txt 2>/dev/null | sort)
+          BBR_INFOS=$(find ./artifacts -type f -name bbr_info.txt 2>/dev/null | sort)
+          INFO_FILE="kernel_config_info.md"
+          DATE_WIB=$(TZ=Asia/Jakarta date +'%Y-%m-%d')
+
+          # Satu file info konfigurasi (bukan kernel): config check + KSU + BBRv3/PLB.
+          # Isi yang sama tampil di step summary dan di-upload sebagai artifact.
           {
             # ── 1. Cek .config akhir ──────────────────────────────────────────
             echo "### 🧩 Kernel Configuration"
@@ -2488,7 +2506,40 @@ jobs:
                 }'
             fi
 
-          } >> "$GITHUB_STEP_SUMMARY"
+            # ── 3. BBRv3 + PLB (dari step Porting, kini satu file info) ───────
+            if [ -n "$BBR_INFOS" ]; then
+              echo
+              echo "### 🚄 BBRv3 + PLB"
+              # shellcheck disable=SC2086
+              cat $BBR_INFOS | awk -F'|' '
+                { key=$2 "|" $3 "|" $4 "|" $5 "|" $6 "|" $7 "|" $8 "|" $9 "|" $10 "|" $11 "|" $12 "|" $13
+                  if (!(key in vars)) order[++n]=key
+                  vars[key]=vars[key] (vars[key]==""?"":", ") $1 }
+                END {
+                  print "| Varian | Base | Patch | SHA-256 | Ukuran | Isi patch | Hasil apply | Status |"
+                  print "|---|---|---|---|---|---|---|---|"
+                  for (i=1;i<=n;i++) { split(order[i], p, "|")
+                    status=(p[12]=="applied" ? "✅ applied" : "♻️ already applied")
+                    printf "| %s | %s | `%s` | `%s` | %s B | %s file, %s hunk, +%s/-%s | dipatch %s, offset %s, fuzz %s | %s |\n", \
+                      vars[order[i]], p[1], p[2], substr(p[3],1,12), p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11], status }
+                }'
+            fi
+
+            echo
+            echo "📄 Info lengkap tersedia sebagai artifact \`kernel-config-info-${DATE_WIB}\`"
+          } | tee "$INFO_FILE" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "info_file=$INFO_FILE" >> "$GITHUB_OUTPUT"
+          echo "date_wib=$DATE_WIB" >> "$GITHUB_OUTPUT"
+
+      - name: "📤 Upload info konfigurasi (single file)"
+        if: needs.build-kernels.result == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: kernel-config-info-${{ steps.summary.outputs.date_wib }}
+          path: ${{ steps.summary.outputs.info_file }}
+          retention-days: 30
+          if-no-files-found: error
       
       - name: "📦 Create release package"
         if: needs.build-kernels.result == 'success'
