@@ -524,16 +524,9 @@ jobs:
           # Remove duplicate lines safely
           sed -i '/ZRAM_DEF_COMP_LZO/d' "$CONFIG_FILE" || true
 
-          # Simbol opsional: hanya diaktifkan jika benar-benar ada di Kconfig tree ini.
-          # (scripts/config diam-diam menulis simbol yang tidak ada, lalu dibuang saat olddefconfig)
-          sym_exists() { grep -rqE "^[[:space:]]*(menu)?config[[:space:]]+$1[[:space:]]*\$" --include='Kconfig*' . ; }
-          for sym in BOEFFLA_WL_BLOCKER; do
-            if sym_exists "$sym"; then
-              scripts/config --file "$CONFIG_FILE" -e "CONFIG_$sym"
-            else
-              echo "::notice::CONFIG_$sym tidak ada di Kconfig tree ini, dilewati"
-            fi
-          done
+          # Ditambahkan langsung ke defconfig (tanpa cek Kconfig). Bila simbolnya tidak ada di tree,
+          # olddefconfig membuangnya saat build; dibiarkan agar ikut aktif jika berasal dari patch/sumber lain.
+          scripts/config --file "$CONFIG_FILE" -e CONFIG_BOEFFLA_WL_BLOCKER
 
           #Petakan konfigurasi otomatis untuk shuedule
             echo "📦 TOOLCHAIN_TYPE=${TOOLCHAIN_TYPE}"
@@ -860,7 +853,7 @@ jobs:
             if sym_exists "$o"; then
               ACTIVE_OPTIONAL="$ACTIVE_OPTIONAL $o"
             else
-              echo "::warning::CONFIG_${o} tidak ada di Kconfig tree ini, dilewati"
+              echo "::notice::CONFIG_${o} tidak ada di Kconfig tree ini, dilewati"
             fi
           done
           OPTIONAL="$ACTIVE_OPTIONAL"
@@ -2201,29 +2194,32 @@ jobs:
           CONFIG_PATH="arch/arm64/configs/${DEFCONFIG_NAME}"
           [ -f "$CONFIG_PATH" ] || { echo "::error::Defconfig tidak ditemukan: $CONFIG_PATH"; exit 1; }
 
-          # Governor walt hanya ada jika Kconfig tree ini mendefinisikannya. Di tree GKI/CLO saat ini
-          # tidak ada (walt berasal dari modul vendor), jadi mengubah governor hanya menonaktifkan
-          # schedutil di defconfig tanpa pengganti. Lewati agar log tidak menyesatkan.
-          if ! grep -rqE '^[[:space:]]*config[[:space:]]+CPU_FREQ_GOV_WALT[[:space:]]*$' --include='Kconfig*' . ; then
-            echo "::notice::CPU_FREQ_GOV_WALT tidak ada di Kconfig tree ini; governor bawaan (schedutil) tidak diubah"
-            exit 0
-          fi
-
           echo "⚙️ Mengatur CPU Governor default ke 'walt'..."
 
+          # Simbol walt SELALU ditambahkan ke defconfig. Schedutil dan default governor lain baru
+          # dimatikan bila walt memang didefinisikan di Kconfig tree ini; kalau tidak, simbol walt
+          # dibuang olddefconfig dan tanpa schedutil governor bawaan jatuh ke "performance" (boros baterai).
           scripts/config --file "$CONFIG_PATH" \
             -e CONFIG_CPU_FREQ_GOV_WALT \
-            -d CONFIG_CPU_FREQ_GOV_SCHEDUTIL \
             -e CONFIG_UCLAMP_TASK \
             -e CONFIG_UCLAMP_TASK_GROUP \
-            -d CONFIG_CPU_FREQ_DEFAULT_GOV_PERFORMANCE \
-            -d CONFIG_CPU_FREQ_DEFAULT_GOV_POWERSAVE \
-            -d CONFIG_CPU_FREQ_DEFAULT_GOV_USERSPACE \
-            -d CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND \
-            -d CONFIG_CPU_FREQ_DEFAULT_GOV_CONSERVATIVE \
-            -d CONFIG_CPU_FREQ_DEFAULT_GOV_INTERACTIVE \
-            -d CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL \
             -e CONFIG_CPU_FREQ_DEFAULT_GOV_WALT
+
+          WALT_REAL=0
+          if grep -rqE '^[[:space:]]*config[[:space:]]+CPU_FREQ_GOV_WALT[[:space:]]*$' --include='Kconfig*' . ; then
+            WALT_REAL=1
+            scripts/config --file "$CONFIG_PATH" \
+              -d CONFIG_CPU_FREQ_GOV_SCHEDUTIL \
+              -d CONFIG_CPU_FREQ_DEFAULT_GOV_PERFORMANCE \
+              -d CONFIG_CPU_FREQ_DEFAULT_GOV_POWERSAVE \
+              -d CONFIG_CPU_FREQ_DEFAULT_GOV_USERSPACE \
+              -d CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND \
+              -d CONFIG_CPU_FREQ_DEFAULT_GOV_CONSERVATIVE \
+              -d CONFIG_CPU_FREQ_DEFAULT_GOV_INTERACTIVE \
+              -d CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL
+          else
+            echo "::notice::CPU_FREQ_GOV_WALT tidak ada di Kconfig tree ini; ditambahkan ke defconfig, schedutil tetap aktif sebagai cadangan"
+          fi
 
           # Verifikasi
           grep -qx "CONFIG_CPU_FREQ_GOV_WALT=y" "$CONFIG_PATH" \
@@ -2231,7 +2227,11 @@ jobs:
           grep -qx "CONFIG_CPU_FREQ_DEFAULT_GOV_WALT=y" "$CONFIG_PATH" \
             || { echo "::error::Default governor walt gagal diset"; exit 1; }
 
-          echo "✅ Default governor = walt"
+          if [ "$WALT_REAL" = 1 ]; then
+            echo "✅ Default governor = walt"
+          else
+            echo "✅ Simbol walt ditambahkan ke defconfig (governor aktif tetap schedutil)"
+          fi
                     
       - name: "🛡️ Guard VINTF"
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
