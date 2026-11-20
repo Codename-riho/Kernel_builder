@@ -121,7 +121,7 @@ jobs:
       # default aman untuk schedule + manual run
       KERNEL_VARIANT: "${{ inputs.kernel_variant || 'all' }}"   # all | ksu-gki | ksu-clo | noksu-gki | noksu-clo | ksu-all | noksu-all
       TOOLCHAIN_TYPE: "${{ inputs.toolchain_type || 'android-tools' }}"
-      DROIDSPACES_SUPPORT: "${{ inputs.droidspaces_support && 'false' || 'true' }}"   # bawaan: aktif
+      DROIDSPACES_SUPPORT: "${{ format('{0}', inputs.droidspaces_support) == 'false' && 'false' || 'true' }}"   # bawaan: aktif (termasuk run terjadwal)
       SUSFS_SUPPORT: "${{ format('{0}', inputs.susfsSupport) == 'false' && 'false' || 'true' }}"   # bawaan: aktif
       KSU_MANAGER: "${{ inputs.ksu_manager || 'BakaSU' }}"
       KSU_REF: "${{ inputs.ksu_ref || '' }}"
@@ -157,13 +157,14 @@ jobs:
           echo "✅ Workspace siap"
 
           # ── 3) Dependensi build (log disimpan, hanya ditampilkan jika gagal) ──
+          # (gawk: setup.sh Baseband-guard memakai match() 3-argumen yang tidak didukung mawk)
           APT_LOG=$(mktemp)
           PKG0=$(dpkg-query -f '.\n' -W | wc -l)
           if ! {
             sudo apt-get update -qq &&
             sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Dpkg::Use-Pty=0 \
               repo rsync aria2 bc bison libxml2-16 libxml2-dev libxml2-utils \
-              build-essential ca-certificates clang cpio curl dwarves flex gcc-aarch64-linux-gnu git \
+              build-essential ca-certificates clang cpio curl dwarves flex gawk gcc-aarch64-linux-gnu git \
               libdw-dev libelf-dev libssl-dev lld llvm llvm-dev pkg-config python3 unzip xz-utils zip zstd
           } >"$APT_LOG" 2>&1; then
             echo "❌ Instalasi dependensi gagal. Log lengkap:"
@@ -469,14 +470,18 @@ jobs:
             rm -f "$file"
           }
 
+          # Dikunci ke commit tertentu agar build bisa direproduksi (naikkan SHA untuk memperbarui)
+          TN_REF="e323d2d6b2c015243c308ab47c463abce38123a6"
+          echo "📌 topnotchfreaks/kernel_patches @ ${TN_REF:0:12}"
+
           while read -r p; do
             [ -n "$p" ] || continue
             apply_patch "$p"
             done < <(printf '%s\n' \
-            "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/main/0001-gki-fixup.patch" \
+            "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/${TN_REF}/0001-gki-fixup.patch" \
             "https://raw.githubusercontent.com/Codename-riho/Kernel_builder/refs/heads/Builders/.github/Patches/0001-scripts-sign-builds.patch" \
-            "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/main/0001-scripts-Don-t-append-and-dirty-to-localversion.patch" \
-            "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/main/0001-scripts-do-not-ship-full-auto_localversion.patch")
+            "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/${TN_REF}/0001-scripts-Don-t-append-and-dirty-to-localversion.patch" \
+            "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/${TN_REF}/0001-scripts-do-not-ship-full-auto_localversion.patch")
             
           # Use scripts/config for safe config manipulation
           scripts/config --file "$CONFIG_FILE" \
@@ -496,7 +501,6 @@ jobs:
             -e CONFIG_TMPFS_XATTR \
             -e CONFIG_TMPFS_POSIX_ACL \
             -e CONFIG_WQ_POWER_EFFICIENT_DEFAULT \
-            -e CONFIG_BOEFFLA_WL_BLOCKER \
             -e CONFIG_PM_WAKELOCKS \
             --set-val CONFIG_PM_WAKELOCKS_LIMIT 100 \
             -e CONFIG_PM_WAKELOCKS_GC \
@@ -520,6 +524,17 @@ jobs:
           
           # Remove duplicate lines safely
           sed -i '/ZRAM_DEF_COMP_LZO/d' "$CONFIG_FILE" || true
+
+          # Simbol opsional: hanya diaktifkan jika benar-benar ada di Kconfig tree ini.
+          # (scripts/config diam-diam menulis simbol yang tidak ada, lalu dibuang saat olddefconfig)
+          sym_exists() { grep -rqE "^[[:space:]]*(menu)?config[[:space:]]+$1[[:space:]]*\$" --include='Kconfig*' . ; }
+          for sym in BOEFFLA_WL_BLOCKER; do
+            if sym_exists "$sym"; then
+              scripts/config --file "$CONFIG_FILE" -e "CONFIG_$sym"
+            else
+              echo "::notice::CONFIG_$sym tidak ada di Kconfig tree ini, dilewati"
+            fi
+          done
 
           #Petakan konfigurasi otomatis untuk shuedule
             echo "📦 TOOLCHAIN_TYPE=${TOOLCHAIN_TYPE}"
@@ -778,7 +793,7 @@ jobs:
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
           NO_IP6_NAT: "1"
-          DS_REF: main                  # branch/tag/commit Droidspaces-OSS
+          DS_REF: cdadb9eb5d0f86aacffff60776333e6f6b73a30a   # commit Droidspaces-OSS (dikunci; naikkan SHA untuk memperbarui)
           DS_OPTIONAL_FEATURES: "true"  # IPv6 NAT, macvlan, UFW, Fail2ban, tmpfs xattr/ACL
         run: |
           set -euo pipefail
@@ -836,6 +851,21 @@ jobs:
             OPTIONAL="${OPTIONAL//IP6_NF_TARGET_MASQUERADE/}"
           fi
 
+          # Hanya aktifkan simbol yang benar-benar ada di Kconfig tree ini
+          sym_exists() { grep -rqE "^[[:space:]]*(menu)?config[[:space:]]+$1[[:space:]]*\$" --include='Kconfig*' . ; }
+          for o in $REQUIRED; do
+            sym_exists "$o" || die "CONFIG_${o} tidak ada di Kconfig tree ini"
+          done
+          ACTIVE_OPTIONAL=""
+          for o in $OPTIONAL; do
+            if sym_exists "$o"; then
+              ACTIVE_OPTIONAL="$ACTIVE_OPTIONAL $o"
+            else
+              echo "::warning::CONFIG_${o} tidak ada di Kconfig tree ini, dilewati"
+            fi
+          done
+          OPTIONAL="$ACTIVE_OPTIONAL"
+
           for o in $REQUIRED $OPTIONAL; do
             scripts/config --file "$CFG" -e "CONFIG_$o"
           done
@@ -862,11 +892,39 @@ jobs:
       - name: "😋 Add BBG & NoMount"
         if: matrix.ksu == 'ksu'
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
+        env:
+          # Dikunci ke commit tertentu agar build bisa direproduksi (naikkan SHA untuk memperbarui)
+          BBG_REF: 028ff7fd509e2104596da7cc1ef8e6ce2a0c9082
+          NOMOUNT_REF: dcd77d03e9912f397a586d7da81694d1628f170e
         run: |
-          wget -qO- https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh | bash
+          set -euo pipefail
+
+          # Unduh skrip ke file (bukan "| bash") supaya kegagalan unduh/eksekusi menghentikan step
+          run_setup() {   # $1=nama  $2=url skrip  $3=ref
+            local f="${RUNNER_TEMP:-/tmp}/$1_setup.sh"
+            curl -fsSL --retry 3 --retry-delay 3 -o "$f" "$2" \
+              || { echo "::error::Gagal mengunduh setup $1: $2"; exit 1; }
+            [ -s "$f" ] || { echo "::error::Skrip setup $1 kosong"; exit 1; }
+            echo "📦 $1 @ ${3:0:12} (sha256 skrip: $(sha256sum "$f" | cut -c1-12))"
+            bash "$f" "$3" || { echo "::error::Setup $1 gagal"; exit 1; }
+          }
+
+          # BBG: setup.sh memakai `git clone --branch <ref>` yang tidak menerima SHA,
+          # jadi clone dan checkout dilakukan di sini; skrip lalu memakai repo yang sudah ada.
+          rm -rf Baseband-guard
+          git clone -q https://github.com/vc-teahouse/Baseband-guard Baseband-guard
+          git -C Baseband-guard checkout -q "$BBG_REF"
+          run_setup BBG "https://raw.githubusercontent.com/vc-teahouse/Baseband-guard/${BBG_REF}/setup.sh" "$BBG_REF"
+          [ -e security/baseband-guard ] || { echo "::error::security/baseband-guard tidak terbentuk"; exit 1; }
+
           scripts/config --file arch/arm64/configs/${{ env.DEFCONFIG_NAME }} -e CONFIG_BBG
           sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig
-          curl -LSs "https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh" | bash -
+          grep -q 'baseband_guard' security/Kconfig \
+            || { echo "::error::baseband_guard tidak masuk ke CONFIG_LSM di security/Kconfig"; exit 1; }
+
+          run_setup NoMount "https://raw.githubusercontent.com/maxsteeel/nomount/${NOMOUNT_REF}/kernel/setup.sh" "$NOMOUNT_REF"
+          [ -e fs/nomount ] || { echo "::error::fs/nomount tidak terbentuk"; exit 1; }
+          echo "✅ BBG & NoMount terpasang"
       
       - name: "⚔️ Setup Ksu Variant (${{ inputs.ksu_manager || 'BakaSU' }})"
         if: matrix.ksu == 'ksu'
@@ -1013,6 +1071,10 @@ jobs:
           TMPD=$(mktemp -d)
           trap 'rm -rf "$TMPD"' EXIT
 
+          if [ -n "${SUSFS_COMMIT:-}" ] && ! [[ "$SUSFS_COMMIT" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+            die "susfs_commit tidak valid (harus 7-40 karakter hex): $SUSFS_COMMIT"
+          fi
+
           KSU_ROOT=$(git -C "$KSU_DIR" rev-parse --show-toplevel 2>/dev/null || true)
           [ -n "$KSU_ROOT" ] || KSU_ROOT="$(dirname "$KSU_DIR")"
 
@@ -1025,11 +1087,14 @@ jobs:
             echo "📦 Clone SUSFS4KSU ($SUSFS_BRANCH)"
             ok=0
             for i in 1 2 3; do
-              if git clone -q --depth=1 -b "$SUSFS_BRANCH" \
-                "$SUSFS_REPO" "$TMPD/susfs4ksu"; then
-                ok=1
-                break
+              # Samakan versi dengan step "Inject SUSFS Integration": hormati susfs_commit bila diisi
+              if [ -n "${SUSFS_COMMIT:-}" ]; then
+                git clone -q -b "$SUSFS_BRANCH" "$SUSFS_REPO" "$TMPD/susfs4ksu" \
+                  && git -C "$TMPD/susfs4ksu" checkout -q "$SUSFS_COMMIT" && ok=1
+              else
+                git clone -q --depth=1 -b "$SUSFS_BRANCH" "$SUSFS_REPO" "$TMPD/susfs4ksu" && ok=1
               fi
+              [ "$ok" = 1 ] && break
               echo "⚠️ Clone gagal ($i/3), mencoba lagi..."
               rm -rf "$TMPD/susfs4ksu"
               sleep $((i * 10))
@@ -1264,6 +1329,9 @@ jobs:
           SUSFS_BRANCH: gki-android13-5.15
           SUSFS_URL: https://github.com/Codename-riho/Kernel_builder.git
         run: |
+          if [ -n "${SUSFS_COMMIT:-}" ] && ! [[ "$SUSFS_COMMIT" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+            echo "::error::susfs_commit tidak valid (harus 7-40 karakter hex): $SUSFS_COMMIT"; exit 1
+          fi
           echo "📦 Menyiapkan repositori SUSFS4KSU..."
           clone_susfs() {
             local i
@@ -1375,8 +1443,6 @@ jobs:
           fi
                  
           echo "💉 Applying SUSFS -> KernelSU patch..."
-          KSU_PATCH="susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
-          
           echo "🏹 Forcing SUSFS source injection..."
           
           # Always replace fs/susfs.c
@@ -1390,12 +1456,16 @@ jobs:
             -e 's/^static void susfs_restore_creds\(/static __maybe_unused void susfs_restore_creds(/' \
             fs/susfs.c
 
-          if [ "$(grep -cE '__maybe_unused.*(susfs_switch_to_ksu_domain|susfs_restore_creds)' fs/susfs.c)" -eq 2 ]; then
-            echo "✅ Unused functions marked as used"
-          else
-            echo "::error::Gagal menandai fungsi unused di fs/susfs.c"
-            exit 1
-          fi
+          # Hanya fungsi yang memang ada sebagai "static" yang wajib ditandai
+          for fn in susfs_switch_to_ksu_domain susfs_restore_creds; do
+            if grep -qE "^static[^;(]*[[:space:]*]${fn}\(" fs/susfs.c; then
+              grep -qE "^static __maybe_unused[^;(]*[[:space:]*]${fn}\(" fs/susfs.c \
+                || { echo "::error::Gagal menandai ${fn} sebagai __maybe_unused di fs/susfs.c"; exit 1; }
+              echo "✅ ${fn}: ditandai __maybe_unused"
+            else
+              echo "ℹ️ ${fn}: bukan fungsi static di susfs.c (versi SUSFS berubah?), dilewati"
+            fi
+          done
           
           # Always replace include/linux/susfs.h
           mkdir -p include/linux
@@ -2140,6 +2210,14 @@ jobs:
           CONFIG_PATH="arch/arm64/configs/${DEFCONFIG_NAME}"
           [ -f "$CONFIG_PATH" ] || { echo "::error::Defconfig tidak ditemukan: $CONFIG_PATH"; exit 1; }
 
+          # Governor walt hanya ada jika Kconfig tree ini mendefinisikannya. Di tree GKI/CLO saat ini
+          # tidak ada (walt berasal dari modul vendor), jadi mengubah governor hanya menonaktifkan
+          # schedutil di defconfig tanpa pengganti. Lewati agar log tidak menyesatkan.
+          if ! grep -rqE '^[[:space:]]*config[[:space:]]+CPU_FREQ_GOV_WALT[[:space:]]*$' --include='Kconfig*' . ; then
+            echo "::notice::CPU_FREQ_GOV_WALT tidak ada di Kconfig tree ini; governor bawaan (schedutil) tidak diubah"
+            exit 0
+          fi
+
           echo "⚙️ Mengatur CPU Governor default ke 'walt'..."
 
           scripts/config --file "$CONFIG_PATH" \
@@ -2269,7 +2347,7 @@ jobs:
 
           LTO=full \
           BUILD_CONFIG=${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}/build.config.gki.aarch64 \
-          build/build.sh -j$(nproc --all) 2>&1 | tee build_full.log
+          build/build.sh -j"$(nproc --all)" 2>&1 | tee build_full.log
 
           # ── Cek .config akhir ──
           set -u
@@ -2410,6 +2488,7 @@ jobs:
            fi
            [ -f "$src" ] || { echo "::error::Image tidak ditemukan: $src"; exit 1; }
            cp "$src" "out/dist/${OUTPUT_NAME}"
+           echo "${BUILD_TIME}" > out/dist/build_date.txt   # tanggal localversion, dipakai notifikasi Telegram
            ls -lh "out/dist/${OUTPUT_NAME}"
            # show build_tools for debugging
            echo "Build tools recorded:"
@@ -2422,6 +2501,7 @@ jobs:
           path: |
             ${{ env.WORK_DIR }}/out/dist/${{ env.OUTPUT_NAME }}
             ${{ env.WORK_DIR }}/out/dist/build_tools.txt
+            ${{ env.WORK_DIR }}/out/dist/build_date.txt
           retention-days: 3
 
       - name: 🔍 Check Space (Post-Build)
@@ -2437,7 +2517,7 @@ jobs:
     needs: [build-kernels]
     if: ${{ !cancelled() }}
     permissions:
-      contents: write
+      contents: read
       actions: read
     steps:
       - name: "📥 Download kernel artifacts"
@@ -2652,7 +2732,7 @@ jobs:
           KSU_REF: ${{ inputs.ksu_ref }}
           SUSFS_SUPPORT: ${{ format('{0}', inputs.susfsSupport) == 'false' && 'false' || 'true' }}
           SUSFS_COMMIT: ${{ inputs.susfs_commit }}
-          DROIDSPACES_SUPPORT: ${{ inputs.droidspaces_support && 'true' || 'false' }}
+          DROIDSPACES_SUPPORT: ${{ format('{0}', inputs.droidspaces_support) == 'false' && 'false' || 'true' }}
           TOOLCHAIN_TYPE: ${{ inputs.toolchain_type || 'android-tools' }}
           CUSTOM_CLANG_REPO: ${{ inputs.customClangRepo }}
           DEVICE_NAME: "Redmi Note 12 4G"
@@ -2692,7 +2772,8 @@ jobs:
           if [ "$SUSFS_SUPPORT" = "false" ]; then
             SUSFS_TEXT="Disabled"
           else
-            SC="${SUSFS_COMMIT:-latest}"; SUSFS_TEXT="Enabled (GKI A13-5.15, ${SC:0:7})"
+            SC=$(printf '%s' "${SUSFS_COMMIT:-latest}" | cut -c1-7 | esc)
+            SUSFS_TEXT="Enabled (GKI A13-5.15, ${SC})"
           fi
           if [ "$DROIDSPACES_SUPPORT" = "false" ]; then 
             DROIDSPACES_TEXT="Disabled"; 
@@ -2726,7 +2807,11 @@ jobs:
           if [ "$BUILD_RESULT" = "success" ] && [ "$JOB_STATUS" = "success" ]; then
             # ───── SUKSES ─────
             IMAGES=$(cd AnyKernel3 && ls Image.* 2>/dev/null | sed 's/^Image\.//' | paste -sd, - | sed 's/,/, /g')
-            DATE=$(TZ=Asia/Jakarta date +'%Y-%m-%d')
+            # Tanggal localversion = tanggal saat build dimulai (bisa beda dari hari packaging bila lewat tengah malam)
+            BD=$(find ./artifacts -type f -name build_date.txt -print -quit 2>/dev/null)
+            DATE=""
+            [ -z "$BD" ] || DATE=$(head -n1 "$BD" | tr -d '\r\n')
+            [[ "$DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || DATE=$(TZ=Asia/Jakarta date +'%Y-%m-%d')
 
             MSG="✅ <b>Kernel Build Successful</b>
 
