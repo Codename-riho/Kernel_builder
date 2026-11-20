@@ -121,7 +121,7 @@ jobs:
       # default aman untuk schedule + manual run
       KERNEL_VARIANT: "${{ inputs.kernel_variant || 'all' }}"   # all | ksu-gki | ksu-clo | noksu-gki | noksu-clo | ksu-all | noksu-all
       TOOLCHAIN_TYPE: "${{ inputs.toolchain_type || 'android-tools' }}"
-      DROIDSPACES_SUPPORT: "${{ format('{0}', inputs.droidspaces_support) == 'false' && 'false' || 'true' }}"   # bawaan: aktif (termasuk run terjadwal)
+      DROIDSPACES_SUPPORT: "${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.droidspaces_support) != 'false' && 'true' || 'false' }}"   # mati saat schedule, ikut input saat manual
       SUSFS_SUPPORT: "${{ format('{0}', inputs.susfsSupport) == 'false' && 'false' || 'true' }}"   # bawaan: aktif
       KSU_MANAGER: "${{ inputs.ksu_manager || 'BakaSU' }}"
       KSU_REF: "${{ inputs.ksu_ref || '' }}"
@@ -2723,7 +2723,7 @@ jobs:
           KSU_REF: ${{ inputs.ksu_ref }}
           SUSFS_SUPPORT: ${{ format('{0}', inputs.susfsSupport) == 'false' && 'false' || 'true' }}
           SUSFS_COMMIT: ${{ inputs.susfs_commit }}
-          DROIDSPACES_SUPPORT: ${{ format('{0}', inputs.droidspaces_support) == 'false' && 'false' || 'true' }}
+          DROIDSPACES_SUPPORT: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.droidspaces_support) != 'false' && 'true' || 'false' }}
           TOOLCHAIN_TYPE: ${{ inputs.toolchain_type || 'android-tools' }}
           CUSTOM_CLANG_REPO: ${{ inputs.customClangRepo }}
           DEVICE_NAME: "Redmi Note 12 4G"
