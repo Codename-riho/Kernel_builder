@@ -180,7 +180,7 @@ jobs:
           echo "💾 Disk sesudah setup: $(df -h / | awk 'NR==2{print $4" bebas dari "$2" ("$5" terpakai)"}')"
           
       - name: 🚧 Setup SWAP 32GB
-        uses: pierotofy/set-swap-space@fc79b3f67fa8a838184ce84a674ca12238d2c761 # pinned (dulu @master)
+        uses: pierotofy/set-swap-space@master
         with:
             swap-size-gb: 32
 
@@ -470,9 +470,8 @@ jobs:
             rm -f "$file"
           }
 
-          # Dikunci ke commit tertentu agar build bisa direproduksi (naikkan SHA untuk memperbarui)
-          TN_REF="e323d2d6b2c015243c308ab47c463abce38123a6"
-          echo "📌 topnotchfreaks/kernel_patches @ ${TN_REF:0:12}"
+          # Mengikuti upstream (branch main)
+          TN_REF="main"
 
           while read -r p; do
             [ -n "$p" ] || continue
@@ -793,7 +792,7 @@ jobs:
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
           NO_IP6_NAT: "1"
-          DS_REF: cdadb9eb5d0f86aacffff60776333e6f6b73a30a   # commit Droidspaces-OSS (dikunci; naikkan SHA untuk memperbarui)
+          DS_REF: main                  # branch/tag/commit Droidspaces-OSS
           DS_OPTIONAL_FEATURES: "true"  # IPv6 NAT, macvlan, UFW, Fail2ban, tmpfs xattr/ACL
         run: |
           set -euo pipefail
@@ -892,29 +891,21 @@ jobs:
       - name: "😋 Add BBG & NoMount"
         if: matrix.ksu == 'ksu'
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
-        env:
-          # Dikunci ke commit tertentu agar build bisa direproduksi (naikkan SHA untuk memperbarui)
-          BBG_REF: 028ff7fd509e2104596da7cc1ef8e6ce2a0c9082
-          NOMOUNT_REF: dcd77d03e9912f397a586d7da81694d1628f170e
         run: |
           set -euo pipefail
 
-          # Unduh skrip ke file (bukan "| bash") supaya kegagalan unduh/eksekusi menghentikan step
-          run_setup() {   # $1=nama  $2=url skrip  $3=ref
+          # Unduh skrip ke file (bukan "| bash") supaya kegagalan unduh/eksekusi menghentikan step.
+          # Mengikuti upstream: tanpa argumen ref (BBG -> main, NoMount -> tag v* terbaru / dev).
+          run_setup() {   # $1=nama  $2=url skrip
             local f="${RUNNER_TEMP:-/tmp}/$1_setup.sh"
             curl -fsSL --retry 3 --retry-delay 3 -o "$f" "$2" \
               || { echo "::error::Gagal mengunduh setup $1: $2"; exit 1; }
             [ -s "$f" ] || { echo "::error::Skrip setup $1 kosong"; exit 1; }
-            echo "📦 $1 @ ${3:0:12} (sha256 skrip: $(sha256sum "$f" | cut -c1-12))"
-            bash "$f" "$3" || { echo "::error::Setup $1 gagal"; exit 1; }
+            echo "📦 $1 (sha256 skrip: $(sha256sum "$f" | cut -c1-12))"
+            bash "$f" || { echo "::error::Setup $1 gagal"; exit 1; }
           }
 
-          # BBG: setup.sh memakai `git clone --branch <ref>` yang tidak menerima SHA,
-          # jadi clone dan checkout dilakukan di sini; skrip lalu memakai repo yang sudah ada.
-          rm -rf Baseband-guard
-          git clone -q https://github.com/vc-teahouse/Baseband-guard Baseband-guard
-          git -C Baseband-guard checkout -q "$BBG_REF"
-          run_setup BBG "https://raw.githubusercontent.com/vc-teahouse/Baseband-guard/${BBG_REF}/setup.sh" "$BBG_REF"
+          run_setup BBG "https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh"
           [ -e security/baseband-guard ] || { echo "::error::security/baseband-guard tidak terbentuk"; exit 1; }
 
           scripts/config --file arch/arm64/configs/${{ env.DEFCONFIG_NAME }} -e CONFIG_BBG
@@ -922,7 +913,7 @@ jobs:
           grep -q 'baseband_guard' security/Kconfig \
             || { echo "::error::baseband_guard tidak masuk ke CONFIG_LSM di security/Kconfig"; exit 1; }
 
-          run_setup NoMount "https://raw.githubusercontent.com/maxsteeel/nomount/${NOMOUNT_REF}/kernel/setup.sh" "$NOMOUNT_REF"
+          run_setup NoMount "https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh"
           [ -e fs/nomount ] || { echo "::error::fs/nomount tidak terbentuk"; exit 1; }
           echo "✅ BBG & NoMount terpasang"
       

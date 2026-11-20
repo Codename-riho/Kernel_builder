@@ -177,7 +177,7 @@ jobs:
           echo "💾 Disk sesudah setup: $(df -h / | awk 'NR==2{print $4" bebas dari "$2" ("$5" terpakai)"}')"
           
       - name: 🚧 Setup SWAP 24GB
-        uses: pierotofy/set-swap-space@fc79b3f67fa8a838184ce84a674ca12238d2c761 # pinned (dulu @master)
+        uses: pierotofy/set-swap-space@master
         with:
             swap-size-gb: 24
 
