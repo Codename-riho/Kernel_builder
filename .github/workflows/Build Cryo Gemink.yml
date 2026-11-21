@@ -1,7 +1,5 @@
-name: "Build Cryo Kernel (using dynamic injection setup)"  
-  # Dynamic Kernel Build System setup If you find an issue,
-  # immediately fix it yourself because the dynamic setup in my branch will be fixed if it is truly successful and running optimally. 
-
+name: "Build Cryo-Gemink Kernel "  
+  
 env:
   OUT_DIR: "out"
   KERNEL_VERSION: "5.15"
@@ -12,13 +10,7 @@ permissions:
   contents: read
   actions: read
 
-concurrency:
-  group: cryo-build-${{ github.ref }}
-  cancel-in-progress: false
-
 on: 
-  schedule:
-    - cron: "0 17 * * 5"
   workflow_dispatch:
      inputs:
       kernel_variant:
@@ -484,6 +476,8 @@ jobs:
             
           # Use scripts/config for safe config manipulation
           scripts/config --file "$CONFIG_FILE" \
+            -e CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE \
+            -d CONFIG_CC_OPTIMIZE_FOR_SIZE \
             -e CONFIG_KALLSYMS \
             -e CONFIG_KALLSYMS_ALL \
             -e CONFIG_TCP_CONG_ADVANCED \
@@ -519,7 +513,8 @@ jobs:
             -d CONFIG_KERNEL_UNCOMPRESSED \
             -e CONFIG_NO_HZ_IDLE \
             -e CONFIG_HZ_250 \
-            -e CONFIG_KPROFILES 
+            -e CONFIG_KPROFILES \
+            -e CONFIG_I2C_MSM_GENI
           
           # Remove duplicate lines safely
           sed -i '/ZRAM_DEF_COMP_LZO/d' "$CONFIG_FILE" || true
@@ -648,7 +643,7 @@ jobs:
       - name: "💉 Inject Kprofiles + set default mode"
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
-          KP_MODE: "0"        # 0 = Default/Disabled, 1 = Battery saver, 2 = Balance, 3 = Performance
+          KP_MODE: "2"        # 0 = Default/Disabled, 1 = Battery saver, 2 = Balance, 3 = Performance
           KP_STRICT: "0"      # 0 = gagal tetap lanjut build (non-fatal), 1 = build berhenti jika gagal
           KP_REF: ""          # opsional: tag/branch/commit untuk mengunci versi (kosong = terbaru)
         run: |
@@ -1611,6 +1606,14 @@ jobs:
           fi
           # Tool host (dtc): redam peringatan clang baru. Harus KBUILD_HOSTCFLAGS, bukan HOSTCFLAGS.
           echo 'KBUILD_HOSTCFLAGS += -Wno-unused-but-set-global' >> Makefile
+
+          # Optimasi -O3 selektif untuk dekompresi ZRAM & Crypto (tanpa mengganggu driver GPU/hook)
+          for m in lib/lz4/Makefile lib/zstd/Makefile lib/lzo/Makefile crypto/Makefile; do
+            if [ -f "$m" ] && ! grep -q 'ccflags-y += -O3' "$m"; then
+              echo 'ccflags-y += -O3' >> "$m"
+              echo "⚡ -O3 diterapkan pada $m"
+            fi
+          done
           
           echo "✅ Flag Makefile ($TOOLCHAIN_TYPE) ditambahkan"
 
@@ -2349,7 +2352,7 @@ jobs:
           fi
           echo "Membaca $CONFIG_OUT"
 
-          CHECK_LIST="CONFIG_LTO_CLANG_FULL CONFIG_TCP_CONG_BBR3 CONFIG_ZRAM_DEF_COMP_LZ4 CONFIG_CRYPTO_LZO CONFIG_DEBUG_INFO_BTF"
+          CHECK_LIST="CONFIG_LTO_CLANG_FULL CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE CONFIG_KPROFILES CONFIG_TCP_CONG_BBR3 CONFIG_ZRAM_DEF_COMP_LZ4 "
           if [ "$ENABLE_KSU" = "true" ]; then
             CHECK_LIST="$CHECK_LIST CONFIG_KSU"
             [ "${KSU_MANAGER:-}" = "SukiSU-Ultra+KPM" ] && CHECK_LIST="$CHECK_LIST CONFIG_KPM"
@@ -2388,7 +2391,7 @@ jobs:
           make ARCH=arm64 LLVM=1 $HOST O=out olddefconfig
 
           # Pastikan config penting tidak hilang setelah resolusi dependensi
-          CHECK_LIST="CONFIG_LTO_CLANG_FULL CONFIG_TCP_CONG_BBR3 CONFIG_ZRAM_DEF_COMP_LZ4 CONFIG_CRYPTO_LZO CONFIG_DEBUG_INFO_BTF"
+          CHECK_LIST="CONFIG_LTO_CLANG_FULL CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE CONFIG_KPROFILES CONFIG_TCP_CONG_BBR3 CONFIG_ZRAM_DEF_COMP_LZ4 "
           if [ "$ENABLE_KSU" = "true" ]; then
             CHECK_LIST="$CHECK_LIST CONFIG_KSU"
             [ "${KSU_MANAGER:-}" = "SukiSU-Ultra+KPM" ] && CHECK_LIST="$CHECK_LIST CONFIG_KPM"
