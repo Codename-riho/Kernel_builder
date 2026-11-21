@@ -33,12 +33,12 @@ to be crowned at the same time.
  kernel/Kbuild                     |  17 ++-
  kernel/manager/apk_sign.c         | 166 +++++++++++++++++++++++-------
  kernel/manager/manager_identity.h | 166 ++++++++++++++++++++++++++++--
- kernel/manager/throne_tracker.c   | 161 ++++++++++++++++++++++++++++-
+ kernel/manager/throne_tracker.c   | 212 +++++++++++++++++++++++++++++++++++++-
  kernel/manager/throne_tracker.h   |  14 +++
  kernel/policy/allowlist.c         |   2 +-
  kernel/supercall/dispatch.c       |   5 +-
  kernel/supercall/supercall.c      |   6 +-
- 8 files changed, 482 insertions(+), 55 deletions(-)
+ 8 files changed, 532 insertions(+), 56 deletions(-)
 
 diff --git a/kernel/Kbuild b/kernel/Kbuild
 index cf96240..a3c3987 100644
@@ -465,10 +465,20 @@ index 1268f44..c3f3dae 100644
 +        ksu_add_manager_appid(appid);
  }
 diff --git a/kernel/manager/throne_tracker.c b/kernel/manager/throne_tracker.c
-index 8642906..559d80d 100644
+index 8642906..a514d08 100644
 --- a/kernel/manager/throne_tracker.c
 +++ b/kernel/manager/throne_tracker.c
-@@ -29,3 +29,10 @@ static DEFINE_MUTEX(throne_tracker_mutex);
+@@ -4,6 +4,7 @@
+ #include "util.h"
+ #include <linux/err.h>
+ #include <linux/fs.h>
++#include <linux/stat.h>
+ #include <linux/list.h>
+ #include <linux/slab.h>
+ #include <linux/string.h>
+@@ -27,10 +28,52 @@
+ 
+ static DEFINE_MUTEX(throne_tracker_mutex);
  
 -uid_t ksu_manager_appid = KSU_INVALID_APPID;
 +#ifndef CONFIG_KSU_DISABLE_MANAGER
@@ -480,7 +490,7 @@ index 8642906..559d80d 100644
 +static size_t last_pkg_count;
 +#endif
  
-@@ -33,2 +40,31 @@ uid_t ksu_manager_appid = KSU_INVALID_APPID;
+ #define DATA_PATH_LEN 384 // 384 is enough for /data/app/<package>/base.apk
  
 +#ifndef CONFIG_KSU_DISABLE_MANAGER
 +// APK each crowned manager was verified against (same index as ksu_manager_appids).
@@ -490,6 +500,9 @@ index 8642906..559d80d 100644
 +// package still owns the uid, so a different package that ends up with the
 +// same uid never inherits it. Only written under throne_tracker_mutex.
 +static char manager_pkg[KSU_MAX_MANAGERS][KSU_MAX_PACKAGE_NAME];
++static u64 manager_ino[KSU_MAX_MANAGERS];
++static struct timespec64 manager_mtime[KSU_MAX_MANAGERS];
++static loff_t manager_size[KSU_MAX_MANAGERS];
 +
 +// Free a slot together with everything remembered about it (throne_tracker_mutex held)
 +static inline void revoke_manager_slot(int slot)
@@ -497,6 +510,9 @@ index 8642906..559d80d 100644
 +	ksu_remove_manager_appid(ksu_manager_appid_at(slot));
 +	manager_apk[slot][0] = '\0';
 +	manager_pkg[slot][0] = '\0';
++	manager_ino[slot] = 0;
++	memset(&manager_mtime[slot], 0, sizeof(manager_mtime[slot]));
++	manager_size[slot] = 0;
 +}
 +
 +bool ksu_manager_request(uid_t uid)
@@ -506,15 +522,21 @@ index 8642906..559d80d 100644
 +
 +	// Read-only on purpose: this runs outside throne_tracker_mutex, so it must not
 +	// write the slots (it could revoke a manager that is being crowned right now)
-+	pr_warn("manager request for uid %u refused: not a crowned manager\n", uid);
++	pr_debug("manager request for uid %u refused: not a crowned manager\n", uid);
 +	return false;
 +}
 +#endif
 +
  static char cached_manager_apk_path[DATA_PATH_LEN];
-@@ -72,3 +108,13 @@ static void crown_manager(const char *apk, struct list_head *uid_data)
- 			pr_info("Crowning manager: %s(uid=%d)\n", target_pkg, np->uid);
+ 
+ #define SYSTEM_PACKAGES_LIST_PATH "/data/system/packages.list"
+@@ -69,8 +112,33 @@ static void crown_manager(const char *apk, struct list_head *uid_data)
+ 
+ 	list_for_each_entry (np, list, list) {
+ 		if (strncmp(np->package, target_pkg, KSU_MAX_PACKAGE_NAME) == 0) {
+-			pr_info("Crowning manager: %s(uid=%d)\n", target_pkg, np->uid);
 -			ksu_set_manager_appid(np->uid);
++			pr_debug("Crowning manager: %s(uid=%d)\n", target_pkg, np->uid);
 +			if (!ksu_add_manager_appid(np->uid)) {
 +				pr_warn("cannot crown %s: no free manager slot or not an app uid\n", target_pkg);
 +			} else {
@@ -522,12 +544,31 @@ index 8642906..559d80d 100644
 +
 +				// remember the verified APK and package so they can be re-checked later
 +				if (slot >= 0) {
++					struct path apk_path;
 +					strscpy(manager_apk[slot], apk, DATA_PATH_LEN);
 +					strscpy(manager_pkg[slot], target_pkg, KSU_MAX_PACKAGE_NAME);
++					if (kern_path(apk, 0, &apk_path) == 0) {
++						struct kstat st;
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
++						if (vfs_getattr(&apk_path, &st, STATX_BASIC_STATS, AT_STATX_SYNC_AS_STAT) == 0)
++#else
++						if (vfs_getattr(&apk_path, &st) == 0)
++#endif
++						{
++							manager_ino[slot] = st.ino;
++							manager_mtime[slot] = st.mtime;
++							manager_size[slot] = st.size;
++						}
++						path_put(&apk_path);
++					}
 +				}
 +			}
  			break;
-@@ -239,5 +285,7 @@ static void search_manager(const char *path, int depth, struct list_head *uid_da
+ 		}
+ 	}
+@@ -237,9 +305,11 @@ static void search_manager(const char *path, int depth, struct list_head *uid_da
+ 			if (unlikely(!is_manager))
+ 				goto skip_iterate;
  
 -			// Verified manager found, halt outer loop
 -			stop = 1;
@@ -537,7 +578,11 @@ index 8642906..559d80d 100644
 +			if (ksu_manager_appid_count() >= KSU_MAX_MANAGERS)
 +				stop = 1;
  
-@@ -267,2 +315,53 @@ static bool is_uid_exist(uid_t uid, char *package, void *data)
+ 		skip_iterate:
+ 			list_del(&pos->list);
+@@ -265,6 +335,84 @@ static bool is_uid_exist(uid_t uid, char *package, void *data)
+ 	return exist;
+ }
  
 +#ifndef KSU_MANAGER_PACKAGE
 +// Re-check the signature of every crowned manager. A slot whose APK no longer
@@ -560,6 +605,7 @@ index 8642906..559d80d 100644
 +#endif
 +		if (manager_apk[i][0]) {
 +			struct path apk_path;
++			struct kstat st;
 +			int ret = kern_path(manager_apk[i], 0, &apk_path);
 +
 +			// The verified APK is gone (app update moves it to a new directory).
@@ -567,19 +613,45 @@ index 8642906..559d80d 100644
 +			// checked again, so drop the slot instead: the rescan below verifies
 +			// the new APK before the manager is crowned again.
 +			if (ret == -ENOENT) {
-+				pr_info("manager uid %u: verified APK is gone, re-verifying\n", appid);
++				pr_debug("manager uid %u: verified APK is gone, re-verifying\n", appid);
 +				revoke_manager_slot(i);
 +				revoked = true;
 +				continue;
 +			}
-+			if (!ret)
++			if (!ret) {
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
++				ret = vfs_getattr(&apk_path, &st, STATX_BASIC_STATS, AT_STATX_SYNC_AS_STAT);
++#else
++				ret = vfs_getattr(&apk_path, &st);
++#endif
 +				path_put(&apk_path);
++
++				// If inode, mtime, and size are all identical, the APK file has not
++				// changed at all: skip reading and parsing the APK signatures again.
++				if (ret == 0 && manager_ino[i] &&
++				    st.ino == manager_ino[i] &&
++				    st.size == manager_size[i] &&
++				    st.mtime.tv_sec == manager_mtime[i].tv_sec &&
++				    st.mtime.tv_nsec == manager_mtime[i].tv_nsec) {
++					continue;
++				}
++			} else {
++				revoke_manager_slot(i);
++				revoked = true;
++				continue;
++			}
 +
 +			// APK is being written / replaced right now: check again on the next run
 +			if (is_lock_held(manager_apk[i]))
 +				continue;
-+			if (is_manager_apk(manager_apk[i]))
++			if (is_manager_apk(manager_apk[i])) {
++				if (ret == 0) {
++					manager_ino[i] = st.ino;
++					manager_mtime[i] = st.mtime;
++					manager_size[i] = st.size;
++				}
 +				continue;
++			}
 +		}
 +
 +		pr_warn("manager uid %u failed signature re-check, revoked!\n", appid);
@@ -591,11 +663,19 @@ index 8642906..559d80d 100644
 +#endif
 +
  static void track_throne_function(bool prune_only)
-@@ -348,2 +447,3 @@ static void track_throne_function(bool prune_only)
+ {
+ 	mutex_lock(&throne_tracker_mutex);
+@@ -346,6 +494,7 @@ static void track_throne_function(bool prune_only)
+ 	if (prune_only)
+ 		goto prune;
  
 +#ifdef KSU_MANAGER_PACKAGE
  	// first, check if manager_uid exist!
-@@ -418,2 +518,55 @@ static void track_throne_function(bool prune_only)
+ 	uid_t manager_package_uid = KSU_INVALID_APPID;
+ 	bool need_rescan = false;
+@@ -416,6 +565,59 @@ static void track_throne_function(bool prune_only)
+ 		pr_info("Search manager finished\n");
+ 	}
  
 +#else
 +	// Multi-manager: several verified managers can be crowned at once.
@@ -624,7 +704,7 @@ index 8642906..559d80d 100644
 +			}
 +		}
 +		if (!found) {
-+			pr_info("manager uid %u is uninstalled or replaced, invalidate it!\n", appid);
++			pr_debug("manager uid %u is uninstalled or replaced, invalidate it!\n", appid);
 +			revoke_manager_slot(i);
 +			// a free slot appeared: another installed app may be a manager
 +			need_rescan = true;
@@ -635,7 +715,7 @@ index 8642906..559d80d 100644
 +		// nothing crowned: look for a manager
 +		need_rescan = true;
 +	} else if (ksu_manager_appid_count() < KSU_MAX_MANAGERS &&
-+		   pkg_count != last_pkg_count) {
++		   pkg_count > last_pkg_count) {
 +		// package set changed and there is a free slot: a new app may be a manager
 +		need_rescan = true;
 +	} else if (!need_rescan) {
@@ -651,6 +731,8 @@ index 8642906..559d80d 100644
 +#endif
 +
  prune:
+ 	// then prune the allowlist
+ 	ksu_prune_allowlist(is_uid_exist, &uid_list);
 diff --git a/kernel/manager/throne_tracker.h b/kernel/manager/throne_tracker.h
 index db648c2..e72200d 100644
 --- a/kernel/manager/throne_tracker.h
