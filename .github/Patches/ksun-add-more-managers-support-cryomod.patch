@@ -604,14 +604,16 @@ index 8642906..a514d08 100644
  			break;
  		}
  	}
-@@ -237,9 +305,11 @@ static void search_manager(const char *path, int depth, struct list_head *uid_da
+@@ -237,9 +305,13 @@ static void search_manager(const char *path, int depth, struct list_head *uid_da
  			if (unlikely(!is_manager))
  				goto skip_iterate;
  
 -			// Verified manager found, halt outer loop
 -			stop = 1;
-+			// Verified manager found: crown it, but keep scanning so that
-+			// every other verified manager gets crowned too
++			// Verified manager found: crown it and halt. KSU_MAX_MANAGERS
++			// is hard-capped to 1, so this fires on the very first match,
++			// same as the original single-manager scan (no extra /data/app
++			// traversal, no extra exposure to a directory-watch detector).
  			crown_manager(candidate_path, uid_data);
 +			if (ksu_manager_appid_count() >= KSU_MAX_MANAGERS)
 +				stop = 1;
