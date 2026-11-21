@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/cryo-kernel.jpg" alt="Cryo Kernel - Reborn from a Dark Destiny" width="100%">
+<img src="https://raw.githubusercontent.com/Codename-riho/Kernel_builder/Builders/assets/cryo-kernel.jpg" alt="Cryo Kernel - Reborn from a Dark Destiny" width="100%">
 
 # ❄️ Cryo Kernel Builder
 
