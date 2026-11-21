@@ -1,6 +1,6 @@
-From af11e77ccb7e1c4e518f70093560683451aede93 Mon Sep 17 00:00:00 2001
-From: Dyatz <Codename-riho@github.com>
-Date: Mon, 9 Nov 2026 15:17:00 +0700
+From 7353a92c0209fe22a3c268ac078af93b377bccaf Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 21 Nov 2026 22:02:56 +0700
 Subject: [PATCH] kernel: add multi-manager support (signature list)
 
 Accept any app whose signing certificate matches an entry of
@@ -13,17 +13,21 @@ a single pinned package name.
   reopening/re-hashing the APK for every entry
 - throne_tracker.c: any package may be a manager, the signature
   decides; remember the crowned package and rescan when it is gone
+- throne_tracker.c: small negative cache (keyed by inode+size+mtime of
+  the candidate APK) so a rescan skips re-opening/re-verifying apps
+  that already failed the signature check and have not changed since,
+  instead of re-checking every installed app's APK on every rescan
 ---
- kernel/Kbuild                   |    5 +
- kernel/manager/apk_sign.c       |  163 ++++++++++++++++++++++++++++++++++-----
- kernel/manager/throne_tracker.c |   73 +++++++----------
- 3 files changed, 177 insertions(+), 64 deletions(-)
+ kernel/Kbuild                   |   5 +
+ kernel/manager/apk_sign.c       | 163 +++++++++++++++++++++++++++-----
+ kernel/manager/throne_tracker.c | 160 ++++++++++++++++++++++---------
+ 3 files changed, 263 insertions(+), 65 deletions(-)
 
 diff --git a/kernel/Kbuild b/kernel/Kbuild
-index 19fa298..c39604c 100644
+index 0a93647b..ee7d763b 100644
 --- a/kernel/Kbuild
 +++ b/kernel/Kbuild
-@@ -185,15 +185,20 @@ KSU_PACKAGE_NAME ?= me.weishu.kernelsu.pr
+@@ -137,15 +137,20 @@ KSU_PACKAGE_NAME ?= me.weishu.kernelsu.pr
  endif
  KSU_EXPECTED_SIZE ?= 0x033b
  KSU_EXPECTED_HASH ?= c371061b19d8c7d7d6133c6a9bafe198fa944e50c1b31c9d8daa8d7f1fc2d2d6
@@ -45,7 +49,7 @@ index 19fa298..c39604c 100644
  
  ccflags-y += -DKSU_NEW_DCACHE_FLUSH=$(KSU_NEW_DCACHE_FLUSH)
 diff --git a/kernel/manager/apk_sign.c b/kernel/manager/apk_sign.c
-index b4f6934..89e92c5 100644
+index d6585dd8..260cbda1 100644
 --- a/kernel/manager/apk_sign.c
 +++ b/kernel/manager/apk_sign.c
 @@ -28,6 +28,12 @@ struct sdesc {
@@ -122,7 +126,7 @@ index b4f6934..89e92c5 100644
          } else if (id != 0x42726577u) { // APK verity padding
              // https://cs.android.com/android/platform/superproject/+/android-latest-release:tools/apksig/src/main/java/com/android/apksig/internal/apk/ApkSigningBlockUtils.java;l=102;drc=ebe4dfd4fd6550c949a6c7c2427484bf5e96500b
  #ifdef CONFIG_KSU_DEBUG
-@@ -323,7 +317,132 @@ int get_pkg_from_apk_dir_path(char *pkg, const char *path)
+@@ -331,7 +325,132 @@ int get_pkg_from_apk_dir_path(char *pkg, const char *path)
      return 0;
  }
  
@@ -257,19 +261,98 @@ index b4f6934..89e92c5 100644
 +    return false;
  }
 diff --git a/kernel/manager/throne_tracker.c b/kernel/manager/throne_tracker.c
-index a827212..364e3e0 100644
+index a827212c..bbbb7e5e 100644
 --- a/kernel/manager/throne_tracker.c
 +++ b/kernel/manager/throne_tracker.c
-@@ -22,7 +22,7 @@ uid_t ksu_manager_appid = KSU_INVALID_APPID;
+@@ -4,6 +4,7 @@
+ #include "util.h"
+ #include <linux/err.h>
+ #include <linux/fs.h>
++#include <linux/stat.h>
+ #include <linux/list.h>
+ #include <linux/slab.h>
+ #include <linux/string.h>
+@@ -22,7 +23,78 @@ uid_t ksu_manager_appid = KSU_INVALID_APPID;
  
  #define DATA_PATH_LEN 384 // 384 is enough for /data/app/<package>/base.apk
  
 -static char cached_manager_apk_path[DATA_PATH_LEN];
 +static char cached_manager_pkg[KSU_MAX_PACKAGE_NAME];
++
++// Multi-manager (signature list): every installed app's base.apk now has to be
++// opened and signature-checked until the real manager is found, since there is
++// no longer a single pinned package name to filter on first. On a device with
++// many apps that is redone, in full, every time track_throne() rescans while
++// no manager is crowned yet (fresh boot, manager just uninstalled, or any
++// other app being installed/removed in the meantime).
++//
++// Most of that cost is wasted: the same non-manager apps get re-opened and
++// re-verified again on every such rescan even though nothing about them
++// changed. This is a small negative cache, keyed by a hash of the candidate
++// APK's (inode, size, mtime) -- i.e. its on-disk identity -- so an app that
++// already failed the signature check is skipped on the next rescan as long as
++// its base.apk is provably unchanged (an update/reinstall always changes at
++// least the mtime, usually the inode too, so this cannot hide a real update).
++// Entries are only ever added for apps that failed verification: this cache
++// can make a rescan skip work it would otherwise redo, never skip verifying a
++// genuine manager.
++#define NEGCACHE_SIZE 256
++static u64 negcache[NEGCACHE_SIZE];
++static unsigned int negcache_next;
++
++static u64 negcache_key(const struct kstat *st)
++{
++	u64 h = (u64)st->ino;
++
++	h = h * 1099511628211ULL ^ (u64)st->size;
++	h = h * 1099511628211ULL ^ (u64)st->mtime.tv_sec;
++	h = h * 1099511628211ULL ^ (u64)st->mtime.tv_nsec;
++	return h ?: 1; // 0 is reserved to mean "empty slot / no key"
++}
++
++static bool negcache_contains(u64 key)
++{
++	int i;
++
++	for (i = 0; i < NEGCACHE_SIZE; i++) {
++		if (negcache[i] == key)
++			return true;
++	}
++	return false;
++}
++
++static void negcache_add(u64 key)
++{
++	negcache[negcache_next] = key;
++	negcache_next = (negcache_next + 1) % NEGCACHE_SIZE;
++}
++
++// Stat the candidate APK; returns false (no key) if that fails for any reason,
++// in which case the caller simply does not use the cache for this one file.
++static bool negcache_stat(const char *apk_path, u64 *key)
++{
++	struct path p;
++	struct kstat st;
++	int ret;
++
++	if (kern_path(apk_path, 0, &p))
++		return false;
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
++	ret = vfs_getattr(&p, &st, STATX_BASIC_STATS, AT_STATX_SYNC_AS_STAT);
++#else
++	ret = vfs_getattr(&p, &st);
++#endif
++	path_put(&p);
++	if (ret)
++		return false;
++
++	*key = negcache_key(&st);
++	return true;
++}
  
  #define SYSTEM_PACKAGES_LIST_PATH "/data/system/packages.list"
  
-@@ -32,18 +32,20 @@ struct uid_data {
+@@ -32,18 +104,20 @@ struct uid_data {
      char package[KSU_MAX_PACKAGE_NAME];
  };
  
@@ -294,7 +377,7 @@ index a827212..364e3e0 100644
  }
  
  struct data_path {
-@@ -73,15 +75,10 @@ struct my_dir_context {
+@@ -73,15 +147,10 @@ struct my_dir_context {
  
  static bool maybe_manager_apk_dir(const char *path)
  {
@@ -312,7 +395,7 @@ index a827212..364e3e0 100644
  }
  
  static FILLDIR_RETURN_TYPE my_actor(struct dir_context *ctx, const char *name, int namelen, loff_t off, u64 ino,
-@@ -126,7 +123,6 @@ static FILLDIR_RETURN_TYPE my_actor(struct dir_context *ctx, const char *name, i
+@@ -126,7 +195,6 @@ static FILLDIR_RETURN_TYPE my_actor(struct dir_context *ctx, const char *name, i
      if (d_type == DT_REG && namelen == 8 && !memcmp(name, "base.apk", 8)) {
          if (maybe_manager_apk_dir(my_ctx->parent_dir)) {
              snprintf(candidate_path, DATA_PATH_LEN, "%s/%.*s", my_ctx->parent_dir, namelen, name);
@@ -320,14 +403,28 @@ index a827212..364e3e0 100644
          }
          // As soon as we met the base.apk, we can stop
          return FILLDIR_ACTOR_STOP;
-@@ -193,17 +189,20 @@ static void search_manager(const char *path, int depth, struct list_head *uid_da
+@@ -193,17 +261,33 @@ static void search_manager(const char *path, int depth, struct list_head *uid_da
              if (!candidate_path[0])
                  goto skip_iterate;
  
 -            // As soon as we get the manager apk path, we can stop
 -            stop = 1;
 -
-             bool is_manager = is_manager_apk(candidate_path);
+-            bool is_manager = is_manager_apk(candidate_path);
++            bool is_manager;
++            u64 nkey;
++            bool have_nkey = negcache_stat(candidate_path, &nkey);
++
++            if (have_nkey && negcache_contains(nkey)) {
++                // Already checked and rejected since this exact APK (by
++                // inode/size/mtime) last appeared; skip opening/parsing it
++                // again.
++                is_manager = false;
++            } else {
++                is_manager = is_manager_apk(candidate_path);
++                if (!is_manager && have_nkey)
++                    negcache_add(nkey);
++            }
              pr_info("Found manager base.apk at path: %s, is_manager: %d\n", candidate_path, is_manager);
  
              // Only crown if signature verification pass
@@ -335,19 +432,19 @@ index a827212..364e3e0 100644
 -                goto skip_iterate;
 +            if (is_manager) {
 +                char pkg[KSU_MAX_PACKAGE_NAME];
-+
+ 
+-            crown_manager(candidate_path, uid_data);
 +                // As soon as a manager is crowned, we can stop
 +                if (get_pkg_from_apk_dir_path(pkg, pos->dirpath) == 0 && crown_manager(pkg, uid_data))
 +                    stop = 1;
 +            }
- 
--            crown_manager(candidate_path, uid_data);
++
 +            // reset for the next directory
 +            candidate_path[0] = 0;
  
          skip_iterate:
              list_del(&pos->list);
-@@ -295,30 +294,33 @@ void track_throne(bool prune_only)
+@@ -295,30 +379,33 @@ void track_throne(bool prune_only)
      if (prune_only)
          goto prune;
  
@@ -390,7 +487,7 @@ index a827212..364e3e0 100644
              ksu_invalidate_manager_uid();
              need_rescan = true;
          } else {
-@@ -328,20 +330,7 @@ void track_throne(bool prune_only)
+@@ -328,20 +415,7 @@ void track_throne(bool prune_only)
      }
  
      if (need_rescan) {
@@ -412,3 +509,6 @@ index a827212..364e3e0 100644
          search_manager("/data/app", 2, &uid_list);
          pr_info("Search manager finished\n");
      }
+-- 
+2.43.0
+
