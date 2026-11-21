@@ -1146,29 +1146,98 @@ jobs:
 
           # ── 2) Ekstra patch manager, jika ada ──
           if [ -n "${EXTRA_PATCH_URL:-}" ]; then
-            echo "⚙️ Ekstra patch ditemukan untuk varian $KSU_MANAGER."
-            echo "Mengunduh dari: $EXTRA_PATCH_URL"
-
             EXTRA_PATCH_FILE="$TMPD/extra.patch"
-            curl -fsSL --retry 3 -o "$EXTRA_PATCH_FILE" "$EXTRA_PATCH_URL" \
-              || die "Gagal mengunduh ekstra patch"
-            [ -s "$EXTRA_PATCH_FILE" ] || die "Ekstra patch kosong"
+            EXTRA_LOG="$TMPD/extra-apply.log"
 
-            if patch -d "$KSU_ROOT" -p1 -R --dry-run -s -f \
+            echo "::group::ℹ️ Informasi ekstra patch"
+            echo "📂 Direktori manager : $KSU_ROOT"
+            echo "🔧 Varian manager    : $KSU_MANAGER"
+            echo "🔗 Sumber patch      : $EXTRA_PATCH_URL"
+            echo "::endgroup::"
+
+            # ── 2a) Unduh patch ──
+            echo "📥 [1/5] Mengunduh ekstra patch"
+            curl -fsSL --retry 3 --retry-delay 2 -o "$EXTRA_PATCH_FILE" "$EXTRA_PATCH_URL" \
+              || die "Gagal mengunduh ekstra patch: $EXTRA_PATCH_URL"
+            [ -s "$EXTRA_PATCH_FILE" ] || die "Ekstra patch kosong: $EXTRA_PATCH_URL"
+
+            EP_SIZE=$(wc -c < "$EXTRA_PATCH_FILE")
+            EP_SHA=$(sha256sum "$EXTRA_PATCH_FILE" | cut -d' ' -f1)
+            EP_FILES=$(grep -c '^diff --git' "$EXTRA_PATCH_FILE" || true)
+            EP_HUNKS=$(grep -c '^@@ ' "$EXTRA_PATCH_FILE" || true)
+            EP_ADD=$(grep -c '^+[^+]' "$EXTRA_PATCH_FILE" || true)
+            EP_DEL=$(grep -c '^-[^-]' "$EXTRA_PATCH_FILE" || true)
+            echo "   • Ukuran   : $EP_SIZE byte"
+            echo "   • SHA-256  : $EP_SHA"
+            echo "   • Isi      : $EP_FILES file, $EP_HUNKS hunk, +$EP_ADD / -$EP_DEL baris"
+
+            echo "::group::📄 Daftar file yang disentuh ekstra patch"
+            grep '^diff --git' "$EXTRA_PATCH_FILE" | awk '{print "   • " substr($4,3)}'
+            echo "::endgroup::"
+
+            # ── 2b) Cek apakah sudah terpasang (mis. re-run) ──
+            echo "🔁 [2/5] Mengecek apakah ekstra patch sudah terpasang"
+            if patch -d "$KSU_ROOT" -p1 -R --dry-run -s -f --no-backup-if-mismatch \
               < "$EXTRA_PATCH_FILE" >/dev/null 2>&1; then
-              echo "✅ Ekstra patch sudah terpasang, dilewati."
-            elif patch -d "$KSU_ROOT" -p1 --forward --dry-run \
-              < "$EXTRA_PATCH_FILE" >"$TMPD/extra.log" 2>&1; then
-              patch -d "$KSU_ROOT" -p1 --forward --batch --no-backup-if-mismatch \
-                < "$EXTRA_PATCH_FILE" >/dev/null \
-                || die "Ekstra patch gagal diterapkan pada $KSU_MANAGER"
-              echo "✅ Ekstra patch berhasil diterapkan."
+              echo "ℹ️ Ekstra patch sudah terpasang di $KSU_MANAGER, step diterapkan dilewati"
+              EXTRA_STATUS="already-applied"; EP_PATCHED=0; EP_OFFSET=0; EP_FUZZ=0
             else
-              cat "$TMPD/extra.log"
-              die "Ekstra patch tidak cocok dengan $KSU_MANAGER"
+              echo "   • Belum terpasang, lanjut"
+
+              # ── 2c) Dry-run ──
+              echo "🔎 [3/5] Dry-run ekstra patch"
+              echo "::group::Output dry-run"
+              if ! patch -d "$KSU_ROOT" -p1 --forward --dry-run --no-backup-if-mismatch \
+                < "$EXTRA_PATCH_FILE" 2>&1 | tee "$EXTRA_LOG"; then
+                echo "::endgroup::"
+                die "Ekstra patch tidak cocok dengan $KSU_MANAGER (lihat output dry-run di atas)"
+              fi
+              echo "::endgroup::"
+
+              # ── 2d) Terapkan ──
+              echo "⚙️ [4/5] Menerapkan ekstra patch"
+              echo "::group::Output patch"
+              patch -d "$KSU_ROOT" -p1 --forward --batch --no-backup-if-mismatch \
+                < "$EXTRA_PATCH_FILE" 2>&1 | tee "$EXTRA_LOG"
+              echo "::endgroup::"
+
+              EP_PATCHED=$(grep -c '^patching file' "$EXTRA_LOG" || true)
+              EP_OFFSET=$(grep -c 'offset' "$EXTRA_LOG" || true)
+              EP_FUZZ=$(grep -c 'with fuzz' "$EXTRA_LOG" || true)
+              echo "   • File dipatch : $EP_PATCHED"
+              echo "   • Hunk offset  : $EP_OFFSET (normal: konteks bergeser beberapa baris)"
+              echo "   • Hunk fuzz    : $EP_FUZZ (normal bila kecil: konteks sedikit berbeda)"
+              if [ "$EP_FUZZ" -gt 0 ]; then
+                echo "::group::Hunk yang diterapkan dengan fuzz"
+                grep 'with fuzz' "$EXTRA_LOG" | sed 's/^/   • /'
+                echo "::endgroup::"
+              fi
+
+              # Hanya .rej yang menandakan kegagalan (fuzz/offset normal dan tidak meninggalkan .orig)
+              if find "$KSU_ROOT" -name '*.rej' -print -quit | grep -q .; then
+                echo "::error::Ada hunk ekstra patch yang gagal (.rej)"
+                find "$KSU_ROOT" -name '*.rej'
+                die "Ekstra patch meninggalkan .rej pada $KSU_MANAGER"
+              fi
+
+              echo "✅ Ekstra patch berhasil diterapkan."
+              EXTRA_STATUS="applied"
             fi
+
+            # ── 2e) Verifikasi: semua file yang disebut di diffstat masih ada ──
+            echo "✅ [5/5] Verifikasi hasil"
+            grep '^diff --git' "$EXTRA_PATCH_FILE" | awk '{print substr($4,3)}' | while read -r f; do
+              if [ -f "$KSU_ROOT/$f" ]; then
+                echo "   • $f (ada)"
+              else
+                echo "::warning::$f tidak ditemukan di $KSU_MANAGER setelah ekstra patch"
+              fi
+            done
+
+            EXTRA_TXT="$(basename "${EXTRA_PATCH_URL%%\?*}") (sha256:${EP_SHA:0:12}, ${EP_FILES} file, +${EP_ADD}/-${EP_DEL}, ${EXTRA_STATUS})"
           else
             echo "✅ Tidak ada ekstra patch untuk $KSU_MANAGER."
+            EXTRA_TXT="tidak ada"
           fi
 
           # ── 3) Aktifkan KernelSU di defconfig ──
@@ -1197,9 +1266,8 @@ jobs:
             SUSFS_TXT="bawaan"
           fi
 
-          EXTRA_TXT="tidak ada"
-          [ -z "${EXTRA_PATCH_URL:-}" ] \
-            || EXTRA_TXT="$(basename "${EXTRA_PATCH_URL%%\?*}")"
+          # EXTRA_TXT sudah diisi di bagian "2) Ekstra patch manager" di atas
+          # (berisi nama file + sha256 + statistik apply, atau "tidak ada").
 
           echo "${VARIANT_NAME}|${KSU_MANAGER}|${KSU_REF_USED:-?}|${VER}|${KPM_STATE}|${SUSFS_TXT}|${EXTRA_TXT}" \
             > "$WORK_DIR/ksu_info.txt"
