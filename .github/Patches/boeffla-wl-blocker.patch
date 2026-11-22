@@ -1,8 +1,7 @@
 diff --git a/drivers/base/power/Makefile b/drivers/base/power/Makefile
-index 8fdd0073e..37cd29dff 100644
 --- a/drivers/base/power/Makefile
 +++ b/drivers/base/power/Makefile
-@@ -5,5 +5,6 @@ obj-$(CONFIG_PM_TRACE_RTC)	+= trace.o
+@@ -5,5 +5,6 @@
  obj-$(CONFIG_PM_GENERIC_DOMAINS)	+=  domain.o domain_governor.o
  obj-$(CONFIG_HAVE_CLK)	+= clock_ops.o
  obj-$(CONFIG_PM_QOS_KUNIT_TEST) += qos-test.o
@@ -11,14 +10,13 @@ index 8fdd0073e..37cd29dff 100644
  ccflags-$(CONFIG_DEBUG_DRIVER) := -DDEBUG
 diff --git a/drivers/base/power/boeffla_wl_blocker.c b/drivers/base/power/boeffla_wl_blocker.c
 new file mode 100644
-index 000000000..b9091ec4f
 --- /dev/null
 +++ b/drivers/base/power/boeffla_wl_blocker.c
-@@ -0,0 +1,238 @@
+@@ -0,0 +1,356 @@
 +/*
 + * Author: andip71, 01.09.2017
 + *
-+ * Version 1.1.0
++ * Version 1.2.0
 + *
 + * This software is licensed under the terms of the GNU General Public
 + * License version 2, as published by the Free Software Foundation, and
@@ -34,6 +32,17 @@ index 000000000..b9091ec4f
 +/*
 + * Change log:
 + *
++ * 1.2.0
++ *   - Wakelock lists are parsed once (on write) into an RCU protected table;
++ *     the wakeup hot path no longer does sprintf()/strstr() and is a single
++ *     static-key branch while the list is empty
++ *   - Fix off-by-one buffer overflow in check (name buffer too small) and in
++ *     the sysfs stores (a list of exactly the maximum length overflowed)
++ *   - Never deactivate a wakeup source without holding its lock
++ *     (pm_print_active_wakeup_sources path now only matches)
++ *   - Serialize list updates, check misc_register()/sysfs errors, clean exit
++ *   - read-only version attribute, 0644 debug attribute
++ *
 + * 1.1.0 (01.09.2017)
 + *   - By default, the following wakelocks are blocked in an own list
 + *     qcom_rx_wakelock, wlan, wlan_wow_wl, wlan_extscan_wl, NETLINK
@@ -46,11 +55,17 @@ index 000000000..b9091ec4f
 + *
 + */
 +
++#define pr_fmt(fmt) "Boeffla WL blocker: " fmt
++
 +#include <linux/module.h>
 +#include <linux/kobject.h>
 +#include <linux/sysfs.h>
 +#include <linux/device.h>
 +#include <linux/miscdevice.h>
++#include <linux/mutex.h>
++#include <linux/slab.h>
++#include <linux/string.h>
++#include <linux/kernel.h>
 +#include <linux/printk.h>
 +#include "boeffla_wl_blocker.h"
 +
@@ -59,28 +74,117 @@ index 000000000..b9091ec4f
 +// Variables
 +/*****************************************/
 +
-+char list_wl[LENGTH_LIST_WL] = {0};
-+char list_wl_default[LENGTH_LIST_WL_DEFAULT] = {0};
-+
-+extern char list_wl_search[LENGTH_LIST_WL_SEARCH];
-+extern bool wl_blocker_active;
-+extern bool wl_blocker_debug;
++static DEFINE_MUTEX(wl_lock);	/* protects both lists and publishing */
++static char list_wl[LENGTH_LIST_WL + 1];
++static char list_wl_default[LENGTH_LIST_WL_DEFAULT + 1];
 +
 +
 +/*****************************************/
 +// internal functions
 +/*****************************************/
 +
-+static void build_search_string(char *list1, char *list2)
++/* next non-empty ';' separated token; returns false at end of string */
++static bool wl_next_token(const char **p, const char **tok, size_t *len)
 +{
-+	// store wakelock list and search string (with semicolons added at start and end)
-+	sprintf(list_wl_search, ";%s;%s;", list1, list2);
++	const char *s = *p;
 +
-+	// set flag if wakelock blocker should be active (for performance reasons)
-+	if (strlen(list_wl_search) > 5)
-+		wl_blocker_active = true;
++	while (*s == ';')
++		s++;
++	if (!*s) {
++		*p = s;
++		return false;
++	}
++
++	*tok = s;
++	*len = strcspn(s, ";");
++	*p = s + *len;
++	return true;
++}
++
++static unsigned int wl_count_tokens(const char *s)
++{
++	const char *tok;
++	size_t len;
++	unsigned int n = 0;
++
++	while (wl_next_token(&s, &tok, &len))
++		if (len <= WL_MAX_NAME)
++			n++;
++	return n;
++}
++
++static void wl_fill_tokens(struct wl_blocker_list *list, const char *s)
++{
++	const char *tok;
++	size_t len;
++
++	while (wl_next_token(&s, &tok, &len)) {
++		if (len > WL_MAX_NAME)
++			continue;	/* can never match a wakeup source name */
++		memcpy(list->e[list->count].name, tok, len);
++		list->e[list->count].name[len] = '\0';
++		list->e[list->count].len = len;
++		list->count++;
++	}
++}
++
++/*
++ * Build a new lookup table from user + default list and publish it.
++ * Must be called with wl_lock held. On error the old table stays active.
++ */
++static int wl_rebuild(const char *user, const char *deflt)
++{
++	struct wl_blocker_list *new_list = NULL, *old_list;
++	unsigned int n = wl_count_tokens(user) + wl_count_tokens(deflt);
++
++	if (n) {
++		new_list = kzalloc(sizeof(*new_list) +
++				   n * sizeof(new_list->e[0]), GFP_KERNEL);
++		if (!new_list)
++			return -ENOMEM;
++		wl_fill_tokens(new_list, deflt);
++		wl_fill_tokens(new_list, user);
++	}
++
++	old_list = rcu_dereference_protected(wl_blocker_current,
++					     lockdep_is_held(&wl_lock));
++	rcu_assign_pointer(wl_blocker_current, new_list);
++
++	/* flag for the hot path (idempotent, may sleep: process context only) */
++	if (new_list)
++		static_branch_enable(&wl_blocker_key);
 +	else
-+		wl_blocker_active = false;
++		static_branch_disable(&wl_blocker_key);
++
++	if (old_list)
++		kfree_rcu(old_list, rcu);
++
++	return 0;
++}
++
++/* store a list: validates length, rebuilds table, then commits the string */
++static ssize_t wl_store_list(char *dst, size_t dst_size, bool is_default,
++			     const char *buf, size_t n)
++{
++	size_t len = strcspn(buf, "\n");
++	char tmp[LENGTH_LIST_WL + 1];
++	int ret;
++
++	/* dst_size includes the terminating NUL */
++	if (len >= dst_size)
++		return -EINVAL;
++
++	memcpy(tmp, buf, len);
++	tmp[len] = '\0';
++
++	mutex_lock(&wl_lock);
++	ret = wl_rebuild(is_default ? list_wl : tmp,
++			 is_default ? tmp : list_wl_default);
++	if (!ret)
++		strscpy(dst, tmp, dst_size);
++	mutex_unlock(&wl_lock);
++
++	return ret ? ret : n;
 +}
 +
 +
@@ -92,27 +196,20 @@ index 000000000..b9091ec4f
 +static ssize_t wakelock_blocker_show(struct device *dev, struct device_attribute *attr,
 +			    char *buf)
 +{
-+	// return list of wakelocks to be blocked
-+	return sprintf(buf, "%s\n", list_wl);
++	ssize_t ret;
++
++	mutex_lock(&wl_lock);
++	ret = scnprintf(buf, PAGE_SIZE, "%s\n", list_wl);
++	mutex_unlock(&wl_lock);
++	return ret;
 +}
 +
 +
 +// store list of user configured wakelocks
-+static ssize_t wakelock_blocker_store(struct device * dev, struct device_attribute *attr,
-+			     const char * buf, size_t n)
++static ssize_t wakelock_blocker_store(struct device *dev, struct device_attribute *attr,
++			     const char *buf, size_t n)
 +{
-+	int len = strcspn(buf, "\n");
-+
-+	// check if string is too long to be stored
-+	if (len > LENGTH_LIST_WL)
-+		return -EINVAL;
-+
-+	// store user configured wakelock list and rebuild search string
-+	strncpy(list_wl, buf, len);
-+	list_wl[len] = '\0';
-+	build_search_string(list_wl_default, list_wl);
-+
-+	return n;
++	return wl_store_list(list_wl, sizeof(list_wl), false, buf, n);
 +}
 +
 +
@@ -120,36 +217,36 @@ index 000000000..b9091ec4f
 +static ssize_t wakelock_blocker_default_show(struct device *dev, struct device_attribute *attr,
 +			    char *buf)
 +{
-+	// return list of wakelocks to be blocked
-+	return sprintf(buf, "%s\n", list_wl_default);
++	ssize_t ret;
++
++	mutex_lock(&wl_lock);
++	ret = scnprintf(buf, PAGE_SIZE, "%s\n", list_wl_default);
++	mutex_unlock(&wl_lock);
++	return ret;
 +}
 +
 +
 +// store list of default, predefined wakelocks
-+static ssize_t wakelock_blocker_default_store(struct device * dev, struct device_attribute *attr,
-+			     const char * buf, size_t n)
++static ssize_t wakelock_blocker_default_store(struct device *dev, struct device_attribute *attr,
++			     const char *buf, size_t n)
 +{
-+	int len = strcspn(buf, "\n");
-+
-+	// check if string is too long to be stored
-+	if (len > LENGTH_LIST_WL_DEFAULT)
-+		return -EINVAL;
-+
-+	// store default, predefined wakelock list and rebuild search string
-+	strncpy(list_wl_default, buf, len);
-+	list_wl_default[len] = '\0';
-+	build_search_string(list_wl_default, list_wl);
-+
-+	return n;
++	return wl_store_list(list_wl_default, sizeof(list_wl_default), true, buf, n);
 +}
 +
 +
 +// show debug information of driver internals
 +static ssize_t debug_show(struct device *dev, struct device_attribute *attr, char *buf)
 +{
-+	// return current debug status
-+	return sprintf(buf, "Debug status: %d\n\nUser list: %s\nDefault list: %s\nSearch list: %s\nActive: %d\n",
-+					wl_blocker_debug, list_wl, list_wl_default, list_wl_search, wl_blocker_active);
++	ssize_t ret;
++
++	mutex_lock(&wl_lock);
++	ret = scnprintf(buf, PAGE_SIZE,
++			"Debug status: %d\n\nUser list: %s\nDefault list: %s\nSearch list: ;%s;%s;\nActive: %d\n",
++			wl_blocker_debug, list_wl, list_wl_default,
++			list_wl_default, list_wl,
++			static_branch_unlikely(&wl_blocker_key));
++	mutex_unlock(&wl_lock);
++	return ret;
 +}
 +
 +
@@ -157,19 +254,12 @@ index 000000000..b9091ec4f
 +static ssize_t debug_store(struct device *dev, struct device_attribute *attr,
 +						const char *buf, size_t count)
 +{
-+	unsigned int ret = -EINVAL;
-+	unsigned int val;
++	bool val;
 +
-+	// check data and store if valid
-+	ret = sscanf(buf, "%d", &val);
-+
-+	if (ret != 1)
++	if (kstrtobool(buf, &val))
 +		return -EINVAL;
 +
-+	if (val == 1)
-+		wl_blocker_debug = true;
-+	else
-+		wl_blocker_debug = false;
++	wl_blocker_debug = val;
 +
 +	return count;
 +}
@@ -178,7 +268,7 @@ index 000000000..b9091ec4f
 +static ssize_t version_show(struct device *dev, struct device_attribute *attr, char *buf)
 +{
 +	// return version information
-+	return sprintf(buf, "%s\n", BOEFFLA_WL_BLOCKER_VERSION);
++	return scnprintf(buf, PAGE_SIZE, "%s\n", BOEFFLA_WL_BLOCKER_VERSION);
 +}
 +
 +
@@ -190,8 +280,8 @@ index 000000000..b9091ec4f
 +// define objects
 +static DEVICE_ATTR(wakelock_blocker, 0644, wakelock_blocker_show, wakelock_blocker_store);
 +static DEVICE_ATTR(wakelock_blocker_default, 0644, wakelock_blocker_default_show, wakelock_blocker_default_store);
-+static DEVICE_ATTR(debug, 0664, debug_show, debug_store);
-+static DEVICE_ATTR(version, 0664, version_show, NULL);
++static DEVICE_ATTR(debug, 0644, debug_show, debug_store);
++static DEVICE_ATTR(version, 0444, version_show, NULL);
 +
 +// define attributes
 +static struct attribute *boeffla_wl_blocker_attributes[] = {
@@ -220,20 +310,33 @@ index 000000000..b9091ec4f
 +
 +static int boeffla_wl_blocker_init(void)
 +{
++	int ret;
++
++	// initialize default list first, so blocking works even without sysfs
++	mutex_lock(&wl_lock);
++	strscpy(list_wl_default, LIST_WL_DEFAULT, sizeof(list_wl_default));
++	ret = wl_rebuild(list_wl, list_wl_default);
++	mutex_unlock(&wl_lock);
++	if (ret)
++		pr_err("failed to build default wakelock list (%d)\n", ret);
++
 +	// register boeffla wakelock blocker control device
-+	misc_register(&boeffla_wl_blocker_control_device);
-+	if (sysfs_create_group(&boeffla_wl_blocker_control_device.this_device->kobj,
-+				&boeffla_wl_blocker_control_group) < 0) {
-+		printk("Boeffla WL blocker: failed to create sys fs object.\n");
-+		return 0;
++	ret = misc_register(&boeffla_wl_blocker_control_device);
++	if (ret) {
++		pr_err("failed to register misc device (%d)\n", ret);
++		return ret;
 +	}
 +
-+	// initialize default list
-+	sprintf(list_wl_default, "%s", LIST_WL_DEFAULT);
-+	build_search_string(list_wl_default, list_wl);
++	ret = sysfs_create_group(&boeffla_wl_blocker_control_device.this_device->kobj,
++				&boeffla_wl_blocker_control_group);
++	if (ret < 0) {
++		pr_err("failed to create sys fs object (%d)\n", ret);
++		misc_deregister(&boeffla_wl_blocker_control_device);
++		return ret;
++	}
 +
 +	// Print debug info
-+	printk("Boeffla WL blocker: driver version %s started\n", BOEFFLA_WL_BLOCKER_VERSION);
++	pr_info("driver version %s started\n", BOEFFLA_WL_BLOCKER_VERSION);
 +
 +	return 0;
 +}
@@ -241,12 +344,25 @@ index 000000000..b9091ec4f
 +
 +static void boeffla_wl_blocker_exit(void)
 +{
++	struct wl_blocker_list *old_list;
++
 +	// remove boeffla wakelock blocker control device
 +	sysfs_remove_group(&boeffla_wl_blocker_control_device.this_device->kobj,
-+                           &boeffla_wl_blocker_control_group);
++			   &boeffla_wl_blocker_control_group);
++	misc_deregister(&boeffla_wl_blocker_control_device);
++
++	// stop blocking and release the table
++	mutex_lock(&wl_lock);
++	static_branch_disable(&wl_blocker_key);
++	old_list = rcu_dereference_protected(wl_blocker_current,
++					     lockdep_is_held(&wl_lock));
++	rcu_assign_pointer(wl_blocker_current, NULL);
++	mutex_unlock(&wl_lock);
++	if (old_list)
++		kfree_rcu(old_list, rcu);
 +
 +	// Print debug info
-+	printk("Boeffla WL blocker: driver stopped\n");
++	pr_info("driver stopped\n");
 +}
 +
 +
@@ -255,14 +371,13 @@ index 000000000..b9091ec4f
 +module_exit(boeffla_wl_blocker_exit);
 diff --git a/drivers/base/power/boeffla_wl_blocker.h b/drivers/base/power/boeffla_wl_blocker.h
 new file mode 100644
-index 000000000..416eaa5ec
 --- /dev/null
 +++ b/drivers/base/power/boeffla_wl_blocker.h
-@@ -0,0 +1,23 @@
+@@ -0,0 +1,51 @@
 +/*
 + * Author: andip71, 01.09.2017
 + *
-+ * Version 1.1.0
++ * Version 1.2.0
 + *
 + * This software is licensed under the terms of the GNU General Public
 + * License version 2, as published by the Free Software Foundation, and
@@ -275,18 +390,45 @@ index 000000000..416eaa5ec
 + *
 + */
 +
-+#define BOEFFLA_WL_BLOCKER_VERSION	"1.1.0"
++#ifndef _BOEFFLA_WL_BLOCKER_H
++#define _BOEFFLA_WL_BLOCKER_H
 +
-+#define LIST_WL_DEFAULT				"qcom_rx_wakelock;wlan;wlan_wow_wl;wlan_extscan_wl;netmgr_wl;NETLINK"
++#include <linux/types.h>
++#include <linux/rcupdate.h>
++#include <linux/jump_label.h>
 +
-+#define LENGTH_LIST_WL				255
++#define BOEFFLA_WL_BLOCKER_VERSION	"1.2.0"
++
++#define LIST_WL_DEFAULT			"qcom_rx_wakelock;wlan;wlan_wow_wl;wlan_extscan_wl;netmgr_wl;NETLINK"
++
++#define LENGTH_LIST_WL			255
 +#define LENGTH_LIST_WL_DEFAULT		100
-+#define LENGTH_LIST_WL_SEARCH		LENGTH_LIST_WL + LENGTH_LIST_WL_DEFAULT + 5
++
++/* wakeup source names longer than this are never matched */
++#define WL_MAX_NAME			50
++
++struct wl_blocker_entry {
++	unsigned char len;
++	char name[WL_MAX_NAME + 1];
++};
++
++/* immutable once published; replaced as a whole via RCU */
++struct wl_blocker_list {
++	struct rcu_head rcu;
++	unsigned int count;
++	struct wl_blocker_entry e[];
++};
++
++/* defined in wakeup.c, managed by boeffla_wl_blocker.c */
++DECLARE_STATIC_KEY_FALSE(wl_blocker_key);
++extern struct wl_blocker_list __rcu *wl_blocker_current;
++extern bool wl_blocker_debug;
++
++#endif /* _BOEFFLA_WL_BLOCKER_H */
 diff --git a/drivers/base/power/main.c b/drivers/base/power/main.c
-index ae1f1489d..bfe162c91 100644
 --- a/drivers/base/power/main.c
 +++ b/drivers/base/power/main.c
-@@ -845,6 +845,10 @@ void dpm_resume_early(pm_message_t state)
+@@ -845,6 +845,10 @@
  	struct device *dev;
  	ktime_t starttime = ktime_get();
  
@@ -298,18 +440,9 @@ index ae1f1489d..bfe162c91 100644
  	mutex_lock(&dpm_list_mtx);
  	pm_transition = state;
 diff --git a/drivers/base/power/wakeup.c b/drivers/base/power/wakeup.c
-index 8c8ffa384..263fcbe58 100644
 --- a/drivers/base/power/wakeup.c
 +++ b/drivers/base/power/wakeup.c
-@@ -22,6 +22,7 @@
- 
- #include "power.h"
- 
-+
- #ifndef CONFIG_SUSPEND
- suspend_state_t pm_suspend_target_state;
- #define pm_suspend_target_state	(PM_SUSPEND_ON)
-@@ -30,6 +31,17 @@ suspend_state_t pm_suspend_target_state;
+@@ -30,6 +30,17 @@
  #define list_for_each_entry_rcu_locked(pos, head, member) \
  	list_for_each_entry_rcu(pos, head, member, \
  		srcu_read_lock_held(&wakeup_srcu))
@@ -317,9 +450,9 @@ index 8c8ffa384..263fcbe58 100644
 +#ifdef CONFIG_BOEFFLA_WL_BLOCKER
 +#include "boeffla_wl_blocker.h"
 +
-+char list_wl_search[LENGTH_LIST_WL_SEARCH] = {0};
-+bool wl_blocker_active = false;
-+bool wl_blocker_debug = false;
++DEFINE_STATIC_KEY_FALSE(wl_blocker_key);
++struct wl_blocker_list __rcu *wl_blocker_current;
++bool wl_blocker_debug;
 +
 +static void wakeup_source_deactivate(struct wakeup_source *ws);
 +#endif
@@ -327,65 +460,75 @@ index 8c8ffa384..263fcbe58 100644
  /*
   * If set, the suspend/hibernate code will abort transitions to a sleep state
   * if wakeup events are registered during or immediately before the transition.
-@@ -613,6 +625,57 @@ static void wakeup_source_activate(struct wakeup_source *ws)
+@@ -613,6 +624,67 @@
  	trace_wakeup_source_activate(ws->name, cec);
  }
  
 +#ifdef CONFIG_BOEFFLA_WL_BLOCKER
-+// AP: Function to check if a wakelock is on the wakelock blocker list
-+static bool check_for_block(struct wakeup_source *ws)
++/* Is the wakeup source on the blocker list? (no side effects) */
++static bool wl_blocker_match(const struct wakeup_source *ws)
 +{
-+	char wakelock_name[52] = {0};
-+	int length;
++	const struct wl_blocker_list *list;
++	size_t len;
++	unsigned int i;
++	bool hit = false;
 +
-+	// if debug mode on, print every wakelock requested
-+	if (wl_blocker_debug)
-+		printk("Boeffla WL blocker: %s requested\n", ws->name);
-+
-+	// if there is no list of wakelocks to be blocked, exit without futher checking
-+	if (!wl_blocker_active)
++	if (!ws || !ws->name)
 +		return false;
 +
-+	// only if ws structure is valid
-+	if (ws)
-+	{
-+		// wake lock names handled have maximum length=50 and minimum=1
-+		length = strlen(ws->name);
-+		if ((length > 50) || (length < 1))
-+			return false;
++	len = strlen(ws->name);
++	if (len < 1 || len > WL_MAX_NAME)
++		return false;
 +
-+		// check if wakelock is in wake lock list to be blocked
-+		sprintf(wakelock_name, ";%s;", ws->name);
-+
-+		if(strstr(list_wl_search, wakelock_name) == NULL)
-+			return false;
-+
-+		// wake lock is in list, print it if debug mode on
-+		if (wl_blocker_debug)
-+			printk("Boeffla WL blocker: %s blocked\n", ws->name);
-+
-+		// if it is currently active, deactivate it immediately + log in debug mode
-+		if (ws->active)
-+		{
-+			wakeup_source_deactivate(ws);
-+
-+			if (wl_blocker_debug)
-+				printk("Boeffla WL blocker: %s killed\n", ws->name);
++	rcu_read_lock();
++	list = rcu_dereference(wl_blocker_current);
++	if (list) {
++		for (i = 0; i < list->count; i++) {
++			if (list->e[i].len == len &&
++			    !memcmp(list->e[i].name, ws->name, len)) {
++				hit = true;
++				break;
++			}
 +		}
++	}
++	rcu_read_unlock();
 +
-+		// finally block it
-+		return true;
++	return hit;
++}
++
++/*
++ * Called with ws->lock held. Blocks (and kills, if currently active) a
++ * wakeup source that is on the list. Cheap no-op while the list is empty.
++ */
++static bool check_for_block(struct wakeup_source *ws)
++{
++	if (unlikely(wl_blocker_debug) && ws && ws->name)
++		pr_info("Boeffla WL blocker: %s requested\n", ws->name);
++
++	if (!static_branch_unlikely(&wl_blocker_key))
++		return false;
++
++	if (!wl_blocker_match(ws))
++		return false;
++
++	if (unlikely(wl_blocker_debug))
++		pr_info("Boeffla WL blocker: %s blocked\n", ws->name);
++
++	if (ws->active) {
++		wakeup_source_deactivate(ws);
++
++		if (unlikely(wl_blocker_debug))
++			pr_info("Boeffla WL blocker: %s killed\n", ws->name);
 +	}
 +
-+	// there was no valid ws structure, do not block by default
-+	return false;
++	return true;
 +}
 +#endif
 +
  /**
   * wakeup_source_report_event - Report wakeup event using the given source.
   * @ws: Wakeup source to report the event for.
-@@ -620,16 +683,23 @@ static void wakeup_source_activate(struct wakeup_source *ws)
+@@ -620,16 +692,23 @@
   */
  static void wakeup_source_report_event(struct wakeup_source *ws, bool hard)
  {
@@ -393,24 +536,22 @@ index 8c8ffa384..263fcbe58 100644
 -	/* This is racy, but the counter is approximate anyway. */
 -	if (events_check_enabled)
 -		ws->wakeup_count++;
--
--	if (!ws->active)
--		wakeup_source_activate(ws);
--
--	if (hard)
--		pm_system_wakeup();
 +#ifdef CONFIG_BOEFFLA_WL_BLOCKER
-+	if (!check_for_block(ws))	// AP: check if wakelock is on wakelock blocker list
++	if (!check_for_block(ws))
 +	{
 +#endif
 +		ws->event_count++;
 +		/* This is racy, but the counter is approximate anyway. */
 +		if (events_check_enabled)
 +			ws->wakeup_count++;
-+
+ 
+-	if (!ws->active)
+-		wakeup_source_activate(ws);
 +		if (!ws->active)
 +			wakeup_source_activate(ws);
-+
+ 
+-	if (hard)
+-		pm_system_wakeup();
 +		if (hard)
 +			pm_system_wakeup();
 +#ifdef CONFIG_BOEFFLA_WL_BLOCKER
@@ -419,32 +560,25 @@ index 8c8ffa384..263fcbe58 100644
  }
  
  /**
-@@ -655,6 +722,7 @@ void __pm_stay_awake(struct wakeup_source *ws)
- }
- EXPORT_SYMBOL_GPL(__pm_stay_awake);
- 
-+
- /**
-  * pm_stay_awake - Notify the PM core that a wakeup event is being processed.
-  * @dev: Device the wakeup event is related to.
-@@ -918,7 +986,11 @@ void pm_print_active_wakeup_sources(void)
+@@ -918,7 +997,13 @@
  	list_for_each_entry_rcu_locked(ws, &wakeup_sources, entry) {
  		if (ws->active) {
  			pm_pr_dbg("active wakeup source: %s\n", ws->name);
 -			active = 1;
-+			pr_info("active wakeup source: %s\n", ws->name);
 +#ifdef CONFIG_BOEFFLA_WL_BLOCKER
-+			if (!check_for_block(ws))	// AP: check if wakelock is on wakelock blocker list
++			pr_info("active wakeup source: %s\n", ws->name);
++			/* ws->lock is not held here: match only, never deactivate */
++			if (!(static_branch_unlikely(&wl_blocker_key) &&
++			      wl_blocker_match(ws)))
 +#endif
 +				active = 1;
  		} else if (!active &&
  			   (!last_activity_ws ||
  			    ktime_to_ns(ws->last_time) >
 diff --git a/kernel/power/Kconfig b/kernel/power/Kconfig
-index a12779650..e886ffad5 100644
 --- a/kernel/power/Kconfig
 +++ b/kernel/power/Kconfig
-@@ -331,3 +331,8 @@ config ENERGY_MODEL
+@@ -331,3 +331,8 @@
  	  The exact usage of the energy model is subsystem-dependent.
  
  	  If in doubt, say N.
