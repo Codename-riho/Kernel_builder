@@ -1,4 +1,4 @@
-From 0ece7f1c0d296015a71183d33ebcfc7379b68cb7 Mon Sep 17 00:00:00 2001
+From 1210829cff55c85bab901a9381399c569854992e Mon Sep 17 00:00:00 2001
 From: Dyatz <Codename-riho@github.com>
 Date: Sun, 15 Nov 2026 21:49:10 +0000
 Subject: [PATCH] kernel: add multi-manager support (hard cap 1, signature
@@ -20,7 +20,9 @@ to be crowned at a time.
   signature on each run; a slot is revoked when its APK no longer
   matches the trusted list, when the APK is gone (app update, the new
   APK is verified again by the rescan) or when another package owns the
-  uid; slots are only written under throne_tracker_mutex
+  uid; slots are only written under throne_tracker_mutex; revalidate_managers()
+  and the APK bookkeeping are noinline_for_stack so struct kstat/struct path
+  do not grow throne_tracker_thread()'s frame past the 2048 byte limit
 - supercall.c: CHANGE_MANAGER_UID no longer crowns an arbitrary uid;
   only an already verified manager is accepted, any other uid is refused
   (read-only, no slot is written outside the scan)
@@ -30,17 +32,17 @@ to be crowned at a time.
 - Kbuild: extended signature list, do not pin KSU_MANAGER_PACKAGE
 ---
  kernel/Kbuild                     |  17 ++-
- kernel/manager/apk_sign.c         | 166 ++++++++++++++++++++++-------
- kernel/manager/manager_identity.h | 166 +++++++++++++++++++++++++++--
- kernel/manager/throne_tracker.c   | 212 +++++++++++++++++++++++++++++++++++++-
- kernel/manager/throne_tracker.h   |  14 +++
+ kernel/manager/apk_sign.c         | 166 +++++++++++++++++-----
+ kernel/manager/manager_identity.h | 166 ++++++++++++++++++++--
+ kernel/manager/throne_tracker.c   | 222 +++++++++++++++++++++++++++++-
+ kernel/manager/throne_tracker.h   |  14 ++
  kernel/policy/allowlist.c         |   2 +-
  kernel/supercall/dispatch.c       |   5 +-
  kernel/supercall/supercall.c      |   6 +-
- 8 files changed, 532 insertions(+), 56 deletions(-)
+ 8 files changed, 542 insertions(+), 56 deletions(-)
 
 diff --git a/kernel/Kbuild b/kernel/Kbuild
-index cf96240..70f280d 100644
+index cf962401..70f280dd 100644
 --- a/kernel/Kbuild
 +++ b/kernel/Kbuild
 @@ -220,10 +220,23 @@ KSU_NEW_DCACHE_FLUSH := $(shell grep -q __flush_dcache_area $(srctree)/arch/arm6
@@ -70,7 +72,7 @@ index cf96240..70f280d 100644
  ccflags-y += -DKSU_MANAGER_PACKAGE=\"$(KSU_MANAGER_PACKAGE)\"
  $(info -- KernelSU-Next Manager package name: $(KSU_MANAGER_PACKAGE))
 diff --git a/kernel/manager/apk_sign.c b/kernel/manager/apk_sign.c
-index 327b326..c6636aa 100644
+index 327b3269..c6636aa7 100644
 --- a/kernel/manager/apk_sign.c
 +++ b/kernel/manager/apk_sign.c
 @@ -28,6 +28,12 @@ struct sdesc {
@@ -293,7 +295,7 @@ index 327b326..c6636aa 100644
  
  	return false;
 diff --git a/kernel/manager/manager_identity.h b/kernel/manager/manager_identity.h
-index 1268f44..943ba10 100644
+index 1268f443..943ba103 100644
 --- a/kernel/manager/manager_identity.h
 +++ b/kernel/manager/manager_identity.h
 @@ -1,11 +1,24 @@
@@ -503,7 +505,7 @@ index 1268f44..943ba10 100644
  #endif
  
 diff --git a/kernel/manager/throne_tracker.c b/kernel/manager/throne_tracker.c
-index 8642906..a514d08 100644
+index 8642906d..fb52e934 100644
 --- a/kernel/manager/throne_tracker.c
 +++ b/kernel/manager/throne_tracker.c
 @@ -4,6 +4,7 @@
@@ -514,7 +516,7 @@ index 8642906..a514d08 100644
  #include <linux/list.h>
  #include <linux/slab.h>
  #include <linux/string.h>
-@@ -27,10 +28,52 @@
+@@ -27,10 +28,77 @@
  
  static DEFINE_MUTEX(throne_tracker_mutex);
  
@@ -553,6 +555,31 @@ index 8642906..a514d08 100644
 +	manager_size[slot] = 0;
 +}
 +
++// Remember the verified APK/package of a slot. Kept out of line on purpose:
++// struct kstat + struct path would otherwise be inlined into the callers and, via
++// track_throne_function(), into throne_tracker_thread()'s stack frame.
++static noinline_for_stack void manager_remember_apk(int slot, const char *apk, const char *pkg)
++{
++	struct path apk_path;
++
++	strscpy(manager_apk[slot], apk, DATA_PATH_LEN);
++	strscpy(manager_pkg[slot], pkg, KSU_MAX_PACKAGE_NAME);
++	if (kern_path(apk, 0, &apk_path) == 0) {
++		struct kstat st;
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
++		if (vfs_getattr(&apk_path, &st, STATX_BASIC_STATS, AT_STATX_SYNC_AS_STAT) == 0)
++#else
++		if (vfs_getattr(&apk_path, &st) == 0)
++#endif
++		{
++			manager_ino[slot] = st.ino;
++			manager_mtime[slot] = st.mtime;
++			manager_size[slot] = st.size;
++		}
++		path_put(&apk_path);
++	}
++}
++
 +bool ksu_manager_request(uid_t uid)
 +{
 +	if (ksu_manager_slot_of(uid) >= 0)
@@ -568,7 +595,7 @@ index 8642906..a514d08 100644
  static char cached_manager_apk_path[DATA_PATH_LEN];
  
  #define SYSTEM_PACKAGES_LIST_PATH "/data/system/packages.list"
-@@ -69,8 +112,33 @@ static void crown_manager(const char *apk, struct list_head *uid_data)
+@@ -69,8 +137,16 @@ static void crown_manager(const char *apk, struct list_head *uid_data)
  
  	list_for_each_entry (np, list, list) {
  		if (strncmp(np->package, target_pkg, KSU_MAX_PACKAGE_NAME) == 0) {
@@ -581,30 +608,13 @@ index 8642906..a514d08 100644
 +				int slot = ksu_manager_slot_of(np->uid);
 +
 +				// remember the verified APK and package so they can be re-checked later
-+				if (slot >= 0) {
-+					struct path apk_path;
-+					strscpy(manager_apk[slot], apk, DATA_PATH_LEN);
-+					strscpy(manager_pkg[slot], target_pkg, KSU_MAX_PACKAGE_NAME);
-+					if (kern_path(apk, 0, &apk_path) == 0) {
-+						struct kstat st;
-+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
-+						if (vfs_getattr(&apk_path, &st, STATX_BASIC_STATS, AT_STATX_SYNC_AS_STAT) == 0)
-+#else
-+						if (vfs_getattr(&apk_path, &st) == 0)
-+#endif
-+						{
-+							manager_ino[slot] = st.ino;
-+							manager_mtime[slot] = st.mtime;
-+							manager_size[slot] = st.size;
-+						}
-+						path_put(&apk_path);
-+					}
-+				}
++				if (slot >= 0)
++					manager_remember_apk(slot, apk, target_pkg);
 +			}
  			break;
  		}
  	}
-@@ -237,9 +305,13 @@ static void search_manager(const char *path, int depth, struct list_head *uid_da
+@@ -237,9 +313,13 @@ static void search_manager(const char *path, int depth, struct list_head *uid_da
  			if (unlikely(!is_manager))
  				goto skip_iterate;
  
@@ -620,7 +630,7 @@ index 8642906..a514d08 100644
  
  		skip_iterate:
  			list_del(&pos->list);
-@@ -265,6 +335,84 @@ static bool is_uid_exist(uid_t uid, char *package, void *data)
+@@ -265,6 +345,84 @@ static bool is_uid_exist(uid_t uid, char *package, void *data)
  	return exist;
  }
  
@@ -628,7 +638,7 @@ index 8642906..a514d08 100644
 +// Re-check the signature of every crowned manager. A slot whose APK no longer
 +// matches the trusted list (replaced, tampered, or crowned without a verified
 +// APK) is revoked immediately. Returns true when at least one slot was revoked.
-+static bool revalidate_managers(void)
++static noinline_for_stack bool revalidate_managers(void)
 +{
 +	bool revoked = false;
 +	int i;
@@ -705,7 +715,7 @@ index 8642906..a514d08 100644
  static void track_throne_function(bool prune_only)
  {
  	mutex_lock(&throne_tracker_mutex);
-@@ -346,6 +494,7 @@ static void track_throne_function(bool prune_only)
+@@ -346,6 +504,7 @@ static void track_throne_function(bool prune_only)
  	if (prune_only)
  		goto prune;
  
@@ -713,7 +723,7 @@ index 8642906..a514d08 100644
  	// first, check if manager_uid exist!
  	uid_t manager_package_uid = KSU_INVALID_APPID;
  	bool need_rescan = false;
-@@ -416,6 +565,59 @@ static void track_throne_function(bool prune_only)
+@@ -416,6 +575,59 @@ static void track_throne_function(bool prune_only)
  		pr_info("Search manager finished\n");
  	}
  
@@ -774,7 +784,7 @@ index 8642906..a514d08 100644
  	// then prune the allowlist
  	ksu_prune_allowlist(is_uid_exist, &uid_list);
 diff --git a/kernel/manager/throne_tracker.h b/kernel/manager/throne_tracker.h
-index db648c2..e72200d 100644
+index db648c23..e72200d2 100644
 --- a/kernel/manager/throne_tracker.h
 +++ b/kernel/manager/throne_tracker.h
 @@ -21,11 +21,25 @@ static inline void track_throne(bool prune_only)
@@ -804,7 +814,7 @@ index db648c2..e72200d 100644
  
  static inline void susfs_renew_uid_filters(void)
 diff --git a/kernel/policy/allowlist.c b/kernel/policy/allowlist.c
-index c54bcf7..6c62ffd 100644
+index c54bcf7c..6c62ffda 100644
 --- a/kernel/policy/allowlist.c
 +++ b/kernel/policy/allowlist.c
 @@ -295,7 +295,7 @@ bool ksu_uid_should_umount(uid_t uid)
@@ -817,7 +827,7 @@ index c54bcf7..6c62ffd 100644
          return false;
      }
 diff --git a/kernel/supercall/dispatch.c b/kernel/supercall/dispatch.c
-index fb2d47a..0dd6aca 100644
+index fb2d47ac..0dd6acad 100644
 --- a/kernel/supercall/dispatch.c
 +++ b/kernel/supercall/dispatch.c
 @@ -356,8 +356,11 @@ static int do_uid_should_umount(void __user *arg)
@@ -834,7 +844,7 @@ index fb2d47a..0dd6aca 100644
      if (copy_to_user(arg, &cmd, sizeof(cmd))) {
          pr_err("get_manager_appid: copy_to_user failed\n");
 diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
-index b759f69..1232abe 100644
+index b759f699..1232abea 100644
 --- a/kernel/supercall/supercall.c
 +++ b/kernel/supercall/supercall.c
 @@ -18,6 +18,7 @@
@@ -859,3 +869,4 @@ index b759f69..1232abe 100644
          }
 -- 
 2.43.0
+
