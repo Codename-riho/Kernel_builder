@@ -66,7 +66,7 @@ on:
        description: "Add droidspaces proper support?"
        required: true
        type: boolean
-       default: true   
+       default: false   
       susfsSupport:
         description: "Add SUSFS Implementation?"
         required: true
