@@ -1,6 +1,4 @@
-name: "Build Cryo Kernel GKICA (GKI + CodeAurora merged source)"
-  # Dynamic Kernel Build System setup If you find an issue,
-  # immediately fix it yourself because the dynamic setup in my branch will be fixed if it is truly successful and running optimally. 
+name: "Build Cryo Kernel GKICA (GKI + CLO merged source)"
 
 env:
   OUT_DIR: "out"
@@ -68,7 +66,7 @@ on:
        description: "Add droidspaces proper support?"
        required: true
        type: boolean
-       default: true   
+       default: false   
       susfsSupport:
         description: "Add SUSFS Implementation?"
         required: true
