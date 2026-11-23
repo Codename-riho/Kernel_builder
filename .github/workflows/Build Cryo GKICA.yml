@@ -638,7 +638,7 @@ jobs:
       - name: "💉 Inject Kprofiles + set default mode"
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
-          KP_MODE: "0"        # 0 = Default/Disabled, 1 = Battery saver, 2 = Balance, 3 = Performance
+          KP_MODE: "2"        # 0 = Default/Disabled, 1 = Battery saver, 2 = Balance, 3 = Performance
           KP_STRICT: "0"      # 0 = gagal tetap lanjut build (non-fatal), 1 = build berhenti jika gagal
           KP_REF: ""          # opsional: tag/branch/commit untuk mengunci versi (kosong = terbaru)
         run: |
