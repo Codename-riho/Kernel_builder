@@ -1539,26 +1539,66 @@ jobs:
 
           SUSFS_KERNEL_PATCH="susfs4ksu/kernel_patches/50_add_susfs_in_gki-android13-5.15.patch"
 
+          # Apakah patch SUSFS memuat baris konteks tertentu UNTUK FILE TERTENTU?
+          # (grep ke seluruh patch salah: mm/memory.c juga memuat
+          #  ' #include <trace/hooks/mm.h>' sebagai konteks, sehingga fake patch
+          #  task_mmu.c selalu dilewati dan hunk #1 gagal.)
+          patch_has_context() {   # patch_has_context <patch> <file> <baris>
+            awk -v file="a/$2" -v line=" $3" '
+              /^diff --git / { infile = ($3 == file) }
+              infile && $0 == line { found = 1 }
+              END { exit(found ? 0 : 1) }' "$1"
+          }
+
+          # Lepas sementara include vendor-hook agar konteks hunk SUSFS cocok;
+          # dikembalikan lagi sesudah patch (atau bila SUSFS dibatalkan).
+          restore_ns_fake() {
+            [ "${NS_FAKE_PATCHED:-0}" = "1" ] || return 0
+            grep -q 'trace/hooks/blk.h' fs/namespace.c && return 0
+            if grep -q '^#include "internal.h"$' fs/namespace.c; then
+              sed -i '/^#include "internal.h"$/a #include <trace/hooks/blk.h>' fs/namespace.c
+              echo "✔ Restored blk.h include"
+            else
+              echo "⚠️ Anchor #include \"internal.h\" not found — could not restore blk.h include, check fs/namespace.c manually"
+            fi
+            NS_FAKE_PATCHED=0
+          }
+          restore_mm_fake() {
+            [ "${MM_FAKE_PATCHED:-0}" = "1" ] || return 0
+            grep -q 'trace/hooks/mm.h' fs/proc/task_mmu.c && return 0
+            if grep -q '^#include <linux/pkeys.h>$' fs/proc/task_mmu.c; then
+              sed -i '/^#include <linux\/pkeys.h>$/a #include <trace/hooks/mm.h>' fs/proc/task_mmu.c
+              echo "✔ Restored mm.h include"
+            else
+              echo "⚠️ Anchor #include <linux/pkeys.h> not found — could not restore mm.h include, check fs/proc/task_mmu.c manually"
+            fi
+            MM_FAKE_PATCHED=0
+          }
+
           echo "👾 Applying namespace.c Fake Patch (if applicable)"
           NS_FAKE_PATCHED=0
-          if ! grep -q '^ #include <trace/hooks/blk.h>$' "$SUSFS_KERNEL_PATCH" \
-             && grep -q '^#include <trace/hooks/blk.h>$' fs/namespace.c; then
+          if patch_has_context "$SUSFS_KERNEL_PATCH" fs/namespace.c '#include <trace/hooks/blk.h>'; then
+            echo "ℹ️ namespace.c: patch SUSFS sudah memuat blk.h sebagai konteks, fake patch tidak perlu"
+          elif grep -q '^#include <trace/hooks/blk.h>$' fs/namespace.c; then
             sed -i '/^#include <trace\/hooks\/blk.h>$/d' fs/namespace.c
             NS_FAKE_PATCHED=1
+            echo "✔ namespace.c: include blk.h dilepas sementara"
           else
-            echo "ℹ️ namespace.c: fake patch dilewati"
+            echo "ℹ️ namespace.c: blk.h tidak ada di source, fake patch tidak perlu"
           fi
 
           echo "👾 Applying task_mmu.c Fake Patch (if applicable)"
           MM_FAKE_PATCHED=0
-          if ! grep -q '^ #include <trace/hooks/mm.h>$' "$SUSFS_KERNEL_PATCH" \
-             && grep -q '^#include <trace/hooks/mm.h>$' fs/proc/task_mmu.c; then
+          if patch_has_context "$SUSFS_KERNEL_PATCH" fs/proc/task_mmu.c '#include <trace/hooks/mm.h>'; then
+            echo "ℹ️ task_mmu.c: patch SUSFS sudah memuat mm.h sebagai konteks, fake patch tidak perlu"
+          elif grep -q '^#include <trace/hooks/mm.h>$' fs/proc/task_mmu.c; then
             sed -i '/^#include <trace\/hooks\/mm.h>$/d' fs/proc/task_mmu.c
             MM_FAKE_PATCHED=1
+            echo "✔ task_mmu.c: include mm.h dilepas sementara"
           else
-            echo "ℹ️ task_mmu.c: fake patch dilewati"
+            echo "ℹ️ task_mmu.c: mm.h tidak ada di source, fake patch tidak perlu"
           fi
-           
+
           KVER=$(awk '/^(VERSION|PATCHLEVEL|SUBLEVEL) =/{print $3}' Makefile | head -3 | paste -sd.)
           echo "🧪 Dry-run SUSFS kernel patch terhadap kernel ${KVER}..."
 
@@ -1581,6 +1621,26 @@ jobs:
             echo "❌ SUSFS TIDAK COCOK dengan kernel ${KVER}. File yang bermasalah:"
             echo "$DRY_LOG" | awk '/^checking file/{f=$3} /FAILED/{print "   - " f ": " $0}'
             echo "::warning::SUSFS tidak cocok dengan kernel ${KVER} (${N_FAIL} hunk gagal)"
+            echo "───────────────────────────────────────"
+
+            # Dry-run tidak mengubah file; yang perlu dibatalkan hanya fake patch.
+            restore_ns_fake
+            restore_mm_fake
+            rm -rf susfs4ksu
+
+            if [ "${NEED_SUSFS_PATCH:-0}" = "1" ]; then
+              # Manager ini memasang hook-nya lewat SUSFS; tanpa SUSFS root tidak berfungsi.
+              echo "::error::Manager ini membutuhkan SUSFS, tetapi patch SUSFS tidak cocok dengan kernel ${KVER}. Build dihentikan."
+              exit 1
+            fi
+
+            echo "⏭️ SUSFS dilewati untuk build ini (dry-run gagal); langkah lanjutan SUSFS ikut dilewati"
+            echo "::warning::SUSFS dinonaktifkan: dry-run patch gagal di kernel ${KVER}"
+            {
+              echo "SUSFS_SUPPORT=false"
+              echo "SUSFS_SKIP_REASON=dry-run gagal di ${KVER} (${N_FAIL} hunk)"
+            } >> "$GITHUB_ENV"
+            exit 0
           fi
           echo "───────────────────────────────────────"
           
@@ -1691,29 +1751,11 @@ jobs:
           EOF
 
           echo "↩️ Reverting namespace.c Fake Patch (if applicable)"
-          if [ "$NS_FAKE_PATCHED" = "1" ] && ! grep -q 'trace/hooks/blk.h' fs/namespace.c; then
-            if grep -q '^#include "internal.h"$' fs/namespace.c; then
-              sed -i '/^#include "internal.h"$/a #include <trace/hooks/blk.h>' fs/namespace.c
-              echo "✔ Restored blk.h include"
-            else
-              echo "⚠️ Anchor #include \"internal.h\" not found — could not restore blk.h include, check fs/namespace.c manually"
-            fi
-          else
-            echo "ℹ️ Skipping blk.h restore (not fake-patched or already present)"
-          fi
+          restore_ns_fake
 
           echo "↩️ Reverting task_mmu.c Fake Patch (if applicable)"
-          if [ "$MM_FAKE_PATCHED" = "1" ] && ! grep -q 'trace/hooks/mm.h' fs/proc/task_mmu.c; then
-            if grep -q '^#include <linux/pkeys.h>$' fs/proc/task_mmu.c; then
-              sed -i '/^#include <linux\/pkeys.h>$/a #include <trace/hooks/mm.h>' fs/proc/task_mmu.c
-              echo "✔ Restored mm.h include"
-            else
-              echo "⚠️ Anchor #include <linux/pkeys.h> not found — could not restore mm.h include, check fs/proc/task_mmu.c manually"
-            fi
-          else
-            echo "ℹ️ Skipping mm.h restore (not fake-patched or already present)"
-          fi
-          
+          restore_mm_fake
+
           echo "✅ KSU configs added"
           
           echo "🎉 SUSFS Integration setup complete! (hmm SUS ඞ )"
@@ -1744,7 +1786,7 @@ jobs:
           )
 
       - name: "💉 Safe-mode inject PRIORITY_UID_FILTER"
-        if: matrix.ksu == 'ksu'
+        if: ${{ matrix.ksu == 'ksu' && env.SUSFS_SUPPORT == 'true' }}
         shell: bash
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
