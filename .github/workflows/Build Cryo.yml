@@ -536,6 +536,134 @@ jobs:
             echo "⚔️ KSU_MANAGER=${KSU_MANAGER}"
             echo "🎯 KERNEL_VARIANT=${KERNEL_VARIANT}"
 
+      - name: "🔒 Backport fixes (CVE-2026-43499 rtmutex + glibc 2.38 host tools)"
+        working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
+        env:
+          RTMUTEX_PATCH_URL: https://raw.githubusercontent.com/Codename-riho/Kernel_builder/refs/heads/${{ github.ref_name }}/.github/Patches/rtmutex/rtmutex-remove-waiter-use-waiter-task-cve-2026-43499.patch
+        run: |
+          set -euo pipefail
+
+          KVER=$(make -s kernelversion 2>/dev/null || echo "?")
+          KMAJ=$(echo "$KVER" | cut -d. -f1,2)
+          echo "🏷️  Versi kernel: $KVER"
+
+          fail() { echo "::error::$*"; exit 1; }
+
+          # ══ 1) CVE-2026-43499 (rtmutex: remove_waiter() memakai `current`) ═════
+          # Diperbaiki upstream di 5.15.212. Source GKI/GKICA (5.15.22x) sudah memuatnya;
+          # source CLO (5.15.206) belum. Keputusan diambil dari ISI source, bukan dari
+          # nama varian, jadi aman dijalankan di semua varian dan di re-run.
+          echo "::group::🔒 CVE-2026-43499 (rtmutex remove_waiter)"
+          RT=kernel/locking/rtmutex.c
+          if [ "$KMAJ" != "5.15" ]; then
+            echo "ℹ️ patch ini khusus 5.15 (kernel: $KMAJ), dilewati"
+          elif [ ! -f "$RT" ] || ! grep -q 'remove_waiter' "$RT"; then
+            echo "ℹ️ $RT / remove_waiter tidak ada, dilewati"
+          elif grep -q 'struct task_struct \*waiter_task = waiter->task;' "$RT"; then
+            echo "✅ sudah diperbaiki di source ini ($KVER), tidak perlu patch"
+          else
+            PATCH="${RUNNER_TEMP:-/tmp}/rtmutex-cve-2026-43499.patch"
+            echo "📥 Mengunduh $RTMUTEX_PATCH_URL"
+            curl -fsSL --retry 3 --retry-delay 2 -o "$PATCH" "$RTMUTEX_PATCH_URL" \
+              || fail "Gagal mengunduh patch: $RTMUTEX_PATCH_URL"
+            [ -s "$PATCH" ] || fail "Patch kosong: $RTMUTEX_PATCH_URL"
+            echo "   SHA-256: $(sha256sum "$PATCH" | cut -d' ' -f1)"
+            if patch -p1 -R --dry-run -s -f --no-backup-if-mismatch < "$PATCH" >/dev/null 2>&1; then
+              echo "✅ patch sudah terpasang, dilewati"
+            elif patch -p1 --dry-run -s -f --no-backup-if-mismatch < "$PATCH" >/dev/null 2>&1; then
+              patch -p1 -s --batch --no-backup-if-mismatch < "$PATCH"
+              echo "✅ patch CVE-2026-43499 dipasang ke $KVER"
+            else
+              patch -p1 --dry-run --batch --no-backup-if-mismatch < "$PATCH" || true
+              fail "Patch CVE-2026-43499 tidak cocok dengan source ini ($KVER)"
+            fi
+            grep -q 'struct task_struct \*waiter_task = waiter->task;' "$RT" \
+              || fail "Verifikasi gagal: remove_waiter() belum memakai waiter->task"
+            grep -qE 'if \(unlikely\(ret < 0\)\)' kernel/locking/rtmutex_api.c \
+              || fail "Verifikasi gagal: rt_mutex_start_proxy_lock() belum memeriksa ret < 0"
+            echo "🔎 verifikasi OK: remove_waiter() memakai waiter->task, proxy-lock memeriksa ret < 0"
+          fi
+          echo "::endgroup::"
+
+          # ══ 2) Perbaikan build tools host untuk glibc >= 2.38 ═════════════════
+          # resolve_btfids (dan libsubcmd) dibangun dengan gcc host, bukan clang kernel.
+          echo "::group::🛠️ glibc >= 2.38 (resolve_btfids / libsubcmd)"
+          GLIBC=$(ldd --version 2>/dev/null | head -n1 | grep -oE '[0-9]+\.[0-9]+$' || true)
+          echo "glibc host: ${GLIBC:-tidak diketahui}"
+          ver_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]; }
+
+          if [ -z "$GLIBC" ] || ! ver_ge "$GLIBC" 2.38; then
+            echo "ℹ️ glibc < 2.38, perbaikan tidak diperlukan"
+          else
+            # (a) Makefile resolve_btfids: teruskan CFLAGS ke build libsubcmd
+            MK=tools/bpf/resolve_btfids/Makefile
+            if [ ! -f "$MK" ]; then
+              echo "ℹ️ $MK tidak ada, dilewati"
+            elif grep -E '\$\(MAKE\) -C \$\(SUBCMD_SRC\)' "$MK" | grep -q 'EXTRA_CFLAGS'; then
+              echo "✅ (a) $MK sudah meneruskan EXTRA_CFLAGS ke libsubcmd"
+            elif grep -qE '\$\(MAKE\) -C \$\(SUBCMD_SRC\)' "$MK"; then
+              sed -i -E '/\$\(MAKE\) -C \$\(SUBCMD_SRC\)/ s/(\$\(MAKE\) -C \$\(SUBCMD_SRC\))/\1 EXTRA_CFLAGS="$(CFLAGS)"/' "$MK"
+              grep -E '\$\(MAKE\) -C \$\(SUBCMD_SRC\)' "$MK" | grep -q 'EXTRA_CFLAGS' \
+                || fail "(a) gagal menambahkan EXTRA_CFLAGS di $MK"
+              echo "✅ (a) EXTRA_CFLAGS ditambahkan ke $MK"
+            else
+              echo "ℹ️ (a) baris build libsubcmd di $MK tidak dikenali, dilewati"
+            fi
+
+            # (b) parse-options.c (hanya 5.10 / 5.15): `for (int i = ...)` -> deklarasi di awal blok
+            PO=tools/lib/subcmd/parse-options.c
+            if [ "$KMAJ" != "5.10" ] && [ "$KMAJ" != "5.15" ]; then
+              echo "ℹ️ (b) hanya untuk 5.10/5.15, dilewati"
+            elif [ ! -f "$PO" ]; then
+              echo "ℹ️ (b) $PO tidak ada, dilewati"
+            elif ! grep -qE '^[[:space:]]*for[[:space:]]*\([[:space:]]*int[[:space:]]+[A-Za-z_][A-Za-z_0-9]*[[:space:]]*=' "$PO"; then
+              echo "✅ (b) $PO sudah memakai deklarasi di luar for, tidak perlu diubah"
+            else
+              python3 - "$PO" <<'PYEOF'
+          import re, sys
+          path = sys.argv[1]
+          src = open(path, encoding='utf-8').read().split('\n')
+          pat = re.compile(r'^(\s*)for\s*\(\s*int\s+([A-Za-z_]\w*)\s*=')
+          i = 0
+          changed = 0
+          while i < len(src):
+              m = pat.match(src[i])
+              if not m:
+                  i += 1
+                  continue
+              indent, name = m.group(1), m.group(2)
+              # blok penutup terdekat: baris sebelumnya yang berakhir '{' dengan indent lebih kecil
+              j = i - 1
+              while j >= 0 and not (src[j].rstrip().endswith('{') and
+                                    len(src[j]) - len(src[j].lstrip()) < len(indent)):
+                  j -= 1
+              if j < 0:
+                  raise SystemExit(f'blok penutup untuk baris {i+1} tidak ditemukan')
+              src[i] = re.sub(r'for\s*\(\s*int\s+', 'for (', src[i], count=1)
+              decl = f"{src[j][:len(src[j]) - len(src[j].lstrip())]}\tint {name};"
+              # hindari deklarasi ganda di blok yang sama
+              k = j + 1
+              dup = False
+              while k < i and len(src[k]) - len(src[k].lstrip()) >= len(decl) - len(decl.lstrip()) - 0:
+                  if src[k].strip() == f'int {name};':
+                      dup = True
+                      break
+                  k += 1
+              if not dup:
+                  src.insert(j + 1, decl)
+                  i += 1
+              changed += 1
+              i += 1
+          open(path, 'w', encoding='utf-8').write('\n'.join(src))
+          print(f'{changed} loop diubah')
+          PYEOF
+              grep -qE '^[[:space:]]*for[[:space:]]*\([[:space:]]*int[[:space:]]+[A-Za-z_]' "$PO" \
+                && fail "(b) masih ada 'for (int ...' di $PO"
+              echo "✅ (b) $PO diperbaiki"
+            fi
+          fi
+          echo "::endgroup::"
+
       - name: "🚄 Porting BBRv3 + PLB (patch)"
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         env:
