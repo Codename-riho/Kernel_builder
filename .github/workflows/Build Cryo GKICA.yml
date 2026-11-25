@@ -928,7 +928,7 @@ jobs:
              REPO="KOWX712/KernelSU"
              SETUP_BRANCH=master
              DEFAULT_REF=master
-             NEED_SUSFS_PATCH=0
+             NEED_SUSFS_PATCH=1   # SUSFS lewat patch khusus KowSU (kowsu-susfs)
               ;;
             SukiSU-Ultra+KPM)
               REPO="SukiSU-Ultra/SukiSU-Ultra"
@@ -956,15 +956,6 @@ jobs:
           esac
 
           NEED_SUSFS_ORIG=$NEED_SUSFS_PATCH   # kebutuhan asli manager, sebelum input SUSFS menimpanya
-
-          # KowSU tidak punya SUSFS (tanpa config KSU_SUSFS, tanpa hook SUSFS di sisi KSU).
-          # Patch kernel SUSFS memanggil hook KSU yang tidak ada di KowSU (preinit, faccessat,
-          # stat, dll.), sehingga link gagal. Matikan SUSFS otomatis untuk manager ini.
-          if [ "$KSU_MANAGER" = "KowSU" ] && [ "$ENABLE_SUSFS" != "false" ]; then
-            echo "::warning::KowSU tidak mendukung SUSFS, SUSFS dinonaktifkan otomatis untuk build ini"
-            ENABLE_SUSFS=false
-            echo "SUSFS_SUPPORT=false" >> "$GITHUB_ENV"
-          fi
 
           # Logika untuk menonaktifkan SUSFS jika diminta pengguna
             if [ "$ENABLE_SUSFS" = "false" ]; then
@@ -1051,6 +1042,27 @@ jobs:
           # ── 1) Patch SUSFS ke manager ──
           if [ "${SUSFS_SUPPORT:-false}" != "true" ]; then
             echo "ℹ️ SUSFS nonaktif, patch SUSFS manager dilewati."
+          elif [ "$KSU_MANAGER" = "KowSU" ]; then
+            # KowSU tidak cocok dengan 10_enable_susfs_for_ksu.patch upstream (sucompat/supercall
+            # sudah diubah, dan hook syscall-table diganti hook manual SUSFS). Pakai patch KowSU
+            # yang sudah di-merge dan dikompilasi: dibuat terhadap KowSU master 44758e1.
+            KOWSU_PATCH_URL="https://raw.githubusercontent.com/Codename-riho/Kernel_builder/refs/heads/${{ github.ref_name }}/.github/Patches/kowsu-susfs/kowsu-susfs-44758e1.patch"
+            KOWSU_PATCH="$TMPD/kowsu-susfs.patch"
+            curl -fsSL --retry 3 --retry-delay 2 -o "$KOWSU_PATCH" "$KOWSU_PATCH_URL" && [ -s "$KOWSU_PATCH" ] \
+              || die "Gagal unduh patch KowSU+SUSFS: $KOWSU_PATCH_URL"
+            if patch -d "$KSU_ROOT" -p1 -R --batch --dry-run -s -f < "$KOWSU_PATCH" >/dev/null 2>&1; then
+              echo "✅ Patch SUSFS sudah terpasang di KowSU"
+            elif patch -d "$KSU_ROOT" -p1 --forward --batch --dry-run < "$KOWSU_PATCH" >"$TMPD/kowsu-dry.log" 2>&1; then
+              patch -d "$KSU_ROOT" -p1 --forward --batch -s --no-backup-if-mismatch < "$KOWSU_PATCH" \
+                || die "Patch KowSU+SUSFS gagal saat diterapkan"
+              echo "✅ Patch SUSFS berhasil dipasang di KowSU"
+              grep -qi "fuzz" "$TMPD/kowsu-dry.log" && echo "::warning::Patch KowSU+SUSFS diterapkan dengan fuzz; periksa hasilnya."
+            else
+              cat "$TMPD/kowsu-dry.log"
+              echo "::warning::Patch KowSU+SUSFS tidak cocok dengan KowSU ref ${KSU_REF:-${KSU_REF_USED:-?}} (dibuat untuk master 44758e1). SUSFS dinonaktifkan untuk build ini."
+              SUSFS_SUPPORT=false
+              echo "SUSFS_SUPPORT=false" >> "$GITHUB_ENV"
+            fi
           elif [ "${NEED_SUSFS_PATCH:-0}" != 1 ]; then
             echo "✅ $KSU_MANAGER sudah memakai SUSFS bawaan. Patch manual dilewati."
           else
