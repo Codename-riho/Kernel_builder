@@ -90,6 +90,11 @@ on:
         required: false
         type: string
         default: ""
+      deepsleep_tuning:
+        description: "Install Cryo Enhance Deep Sleep (CEDS) to kernel?"
+        required: true
+        type: boolean
+        default: false
                                   
 jobs:
   build-kernels:
@@ -126,6 +131,7 @@ jobs:
       KSU_MANAGER: "${{ inputs.ksu_manager || 'BakaSU' }}"
       KSU_REF: "${{ inputs.ksu_ref || '' }}"
       SUSFS_COMMIT: "${{ inputs.susfs_commit || '' }}"
+      DEEPSLEEP_TUNING: "${{ inputs.deepsleep_tuning && 'true' || 'false' }}"   # bawaan: mati
 
     steps:        
       - name: "✨ Setup workspace (cleanup + dependensi)"
@@ -2302,6 +2308,244 @@ jobs:
             echo "✅ Simbol walt ditambahkan ke defconfig (governor aktif tetap schedutil)"
           fi
                     
+      - name: "💤 Install CEDS (built-in kernel)"
+        if: ${{ env.DEEPSLEEP_TUNING == 'true' }}
+        shell: bash
+        working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
+        env:
+          DS_DELAY_SEC: 90        # jeda sebelum pass pertama (detik)
+          DS_PASSES: 3            # jumlah pass penegasan; jeda tiap pass digandakan
+          DS_STAT_SEC: 5          # vm.stat_interval (detik)
+          DS_DIRTY_WB_CS: 1500    # vm.dirty_writeback_centisecs
+          VARIANT_NAME: ${{ env.KERNEL_TAG }}
+        run: |
+          set -euo pipefail
+
+          # ── 1. Validasi input (sekaligus normalisasi: "090" -> 90) ────────────
+          need_int() {   # need_int NAMA MIN MAX
+            local name=$1 lo=$2 hi=$3 val=${!1}
+            if ! [[ $val =~ ^[0-9]+$ ]] || (( 10#$val < lo || 10#$val > hi )); then
+              echo "::error::$name harus bilangan bulat $lo-$hi (nilai: '$val')"; exit 1
+            fi
+            printf -v "$name" '%d' "$((10#$val))"
+          }
+          need_int DS_DELAY_SEC   1 3600
+          need_int DS_PASSES      1 8
+          need_int DS_STAT_SEC    1 600
+          need_int DS_DIRTY_WB_CS 1 60000   # 0 = mematikan writeback periodik, sengaja ditolak
+
+          fail() { echo "::error::$*"; exit 1; }
+          [ -f mm/Makefile ] || fail "mm/Makefile tidak ada (working-directory bukan root kernel?)"
+
+          # ── 2. Deteksi simbol: hanya pasang yang benar-benar ada di tree ini ──
+          STAT_T=$(sed -nE 's/^(unsigned( int)?|int)[[:space:]]+sysctl_stat_interval\b.*/\1/p' mm/vmstat.c 2>/dev/null | head -n1 || true)
+          HAS_STAT=0; HAS_WB=0
+          [ -n "$STAT_T" ] && HAS_STAT=1
+          grep -qE '^unsigned( int)?[[:space:]]+dirty_writeback_interval\b' mm/page-writeback.c 2>/dev/null && HAS_WB=1
+          echo "sysctl_stat_interval: ${STAT_T:-tidak ada} | dirty_writeback_interval: $HAS_WB"
+          if (( HAS_STAT + HAS_WB == 0 )); then
+            echo "::warning::tidak ada simbol yang cocok di tree ini; CEDS dilewati"
+            echo "${VARIANT_NAME}|dilewati|dilewati|0|0" > "$WORK_DIR/deepsleep_info.txt"
+            exit 0
+          fi
+
+          # ── 3. Lapis 1: ubah nilai DEFAULT langsung di sumber kernel ──────────
+          #    Tanpa kode tambahan & tanpa balapan: kernel sudah lahir dengan nilai ini.
+          DEF_STAT=dilewati; DEF_WB=dilewati
+          if (( HAS_STAT )); then
+            sed -i -E "/^(unsigned( int)?|int)[[:space:]]+sysctl_stat_interval\b/ s/=[[:space:]]*[^;]+;/= ${DS_STAT_SEC} * HZ;/" mm/vmstat.c
+            if grep -qE "^(unsigned( int)?|int)[[:space:]]+sysctl_stat_interval\b.*= ${DS_STAT_SEC} \* HZ;" mm/vmstat.c; then
+              DEF_STAT=terpasang
+            else
+              DEF_STAT=gagal
+              echo "::warning::pola inisialisasi sysctl_stat_interval tidak dikenali; hanya penegas runtime yang aktif"
+            fi
+          fi
+          if (( HAS_WB )); then
+            sed -i -E "/^unsigned( int)?[[:space:]]+dirty_writeback_interval\b/ s/=[[:space:]]*[^;]+;/= ${DS_DIRTY_WB_CS};/" mm/page-writeback.c
+            if grep -qE "^unsigned( int)?[[:space:]]+dirty_writeback_interval\b.*= ${DS_DIRTY_WB_CS};" mm/page-writeback.c; then
+              DEF_WB=terpasang
+            else
+              DEF_WB=gagal
+              echo "::warning::pola inisialisasi dirty_writeback_interval tidak dikenali; hanya penegas runtime yang aktif"
+            fi
+          fi
+
+          # ── 4. Lapis 2: penegas runtime (terbatas, bukan daemon/loop) ─────────
+          #    Dipasang di mm/ (selalu dibangun), bukan kernel/power (bergantung CONFIG_PM).
+          #    Template memakai heredoc BERKUTIP lalu token @NAMA@ diganti dengan sed,
+          #    sehingga shell tidak pernah menafsirkan isi kode C (tanda $, `, \).
+          STAT_EXTERN="/* sysctl_stat_interval sudah dideklarasikan di <linux/vmstat.h> */"
+          grep -qE '\bsysctl_stat_interval\b' include/linux/vmstat.h 2>/dev/null \
+            || STAT_EXTERN="extern ${STAT_T:-int} sysctl_stat_interval;"
+          WB_EXTERN="/* dirty_writeback_interval sudah dideklarasikan di <linux/writeback.h> */"
+          grep -qE '\bdirty_writeback_interval\b' include/linux/writeback.h 2>/dev/null \
+            || WB_EXTERN="extern unsigned int dirty_writeback_interval;"
+
+          cat > mm/cryo_deepsleep.c <<'EOF'
+          // SPDX-License-Identifier: GPL-2.0
+          /*
+           * cryo_deepsleep (CEDS) - penegas VM tuning hemat daya, built-in, tanpa daemon.
+           *
+           * Setara bagian VM di 99-deepsleep.sh: vm.stat_interval dan
+           * vm.dirty_writeback_centisecs. Jalur suspend/resume TIDAK disentuh.
+           *
+           * Nilai default sudah diubah di sumbernya (mm/vmstat.c, mm/page-writeback.c).
+           * Berkas ini menegaskannya ulang beberapa kali (jumlah terbatas, jeda
+           * berlipat ganda, dibatasi 6 jam) untuk mengalahkan init.rc, PowerHAL, atau
+           * modul yang menimpa sysctl saat boot, dan mencatat di dmesg apakah ada yang
+           * menimpa.
+           *
+           *   dmesg | grep cryo_deepsleep
+           *   cat /sys/module/cryo_deepsleep/parameters/passes        (pass yang sudah jalan)
+           *   echo 1 > /sys/module/cryo_deepsleep/parameters/apply    (tegaskan sekarang)
+           *   echo 0 > /sys/module/cryo_deepsleep/parameters/enable   (matikan penegasan)
+           *   cmdline: cryo_deepsleep.enable=0
+           *
+           * Baris log "A -> B" berarti nilainya DITIMPA pihak lain sejak pass sebelumnya.
+           */
+          #define pr_fmt(fmt) "cryo_deepsleep: " fmt
+
+          #include <linux/init.h>
+          #include <linux/kernel.h>
+          #include <linux/jiffies.h>
+          #include <linux/minmax.h>
+          #include <linux/moduleparam.h>
+          #include <linux/mutex.h>
+          #include <linux/vmstat.h>
+          #include <linux/workqueue.h>
+          #include <linux/writeback.h>
+
+          #define CRYO_DELAY_SEC		@DS_DELAY_SEC@
+          #define CRYO_PASSES		@DS_PASSES@
+          #define CRYO_STAT_SEC		@DS_STAT_SEC@
+          #define CRYO_DIRTY_WB_CS	@DS_DIRTY_WB_CS@
+          #define CRYO_SET_STAT		@HAS_STAT@
+          #define CRYO_SET_WB		@HAS_WB@
+          #define CRYO_MAX_DELAY_SEC	21600UL
+
+          @STAT_EXTERN@
+          @WB_EXTERN@
+
+          static bool cryo_enable = true;
+          module_param_named(enable, cryo_enable, bool, 0644);
+
+          static unsigned int cryo_pass;
+          module_param_named(passes, cryo_pass, uint, 0444);
+
+          /* menyerialkan pass otomatis dengan pemicu manual lewat sysfs */
+          static DEFINE_MUTEX(cryo_lock);
+
+          /* n == 0: pemicu manual; n >= 1: pass otomatis ke-n */
+          static void cryo_apply(unsigned int n)
+          {
+          	mutex_lock(&cryo_lock);
+          	if (!READ_ONCE(cryo_enable)) {
+          		pr_info("#%u: dinonaktifkan, dilewati\n", n);
+          		goto out;
+          	}
+          #if CRYO_SET_STAT
+          	{
+          		unsigned long cur = (unsigned long)READ_ONCE(sysctl_stat_interval);
+          		unsigned long want = (unsigned long)CRYO_STAT_SEC * HZ;
+
+          		if (cur != want) {
+          			pr_info("#%u: vm.stat_interval %lus -> %ds\n", n,
+          				cur / HZ, CRYO_STAT_SEC);
+          			WRITE_ONCE(sysctl_stat_interval, want);
+          		} else {
+          			pr_info("#%u: vm.stat_interval ok (%ds)\n", n, CRYO_STAT_SEC);
+          		}
+          	}
+          #endif
+          #if CRYO_SET_WB
+          	{
+          		unsigned long cur = (unsigned long)READ_ONCE(dirty_writeback_interval);
+
+          		if (cur != CRYO_DIRTY_WB_CS) {
+          			pr_info("#%u: dirty_writeback_centisecs %lu -> %d\n", n,
+          				cur, CRYO_DIRTY_WB_CS);
+          			WRITE_ONCE(dirty_writeback_interval, CRYO_DIRTY_WB_CS);
+          		} else {
+          			pr_info("#%u: dirty_writeback_centisecs ok (%d)\n", n,
+          				CRYO_DIRTY_WB_CS);
+          		}
+          	}
+          #endif
+          out:
+          	mutex_unlock(&cryo_lock);
+          }
+
+          static unsigned long cryo_next_delay(unsigned int pass)
+          {
+          	unsigned long sec = (unsigned long)CRYO_DELAY_SEC << pass;
+
+          	return min(sec, CRYO_MAX_DELAY_SEC) * HZ;
+          }
+
+          static void cryo_work_fn(struct work_struct *work)
+          {
+          	unsigned int n = READ_ONCE(cryo_pass) + 1;
+
+          	cryo_apply(n);
+          	WRITE_ONCE(cryo_pass, n);
+          	if (n < CRYO_PASSES)
+          		queue_delayed_work(system_power_efficient_wq,
+          				   to_delayed_work(work), cryo_next_delay(n));
+          }
+          static DECLARE_DELAYED_WORK(cryo_work, cryo_work_fn);
+
+          static int cryo_apply_set(const char *val, const struct kernel_param *kp)
+          {
+          	cryo_apply(0);
+          	return 0;
+          }
+          static const struct kernel_param_ops cryo_apply_ops = {
+          	.set = cryo_apply_set,
+          };
+          module_param_cb(apply, &cryo_apply_ops, NULL, 0200);
+
+          static int __init cryo_deepsleep_init(void)
+          {
+          	queue_delayed_work(system_power_efficient_wq, &cryo_work,
+          			   (unsigned long)CRYO_DELAY_SEC * HZ);
+          	return 0;
+          }
+          late_initcall(cryo_deepsleep_init);
+          EOF
+
+          sed -i \
+            -e "s|@DS_DELAY_SEC@|${DS_DELAY_SEC}|g" \
+            -e "s|@DS_PASSES@|${DS_PASSES}|g" \
+            -e "s|@DS_STAT_SEC@|${DS_STAT_SEC}|g" \
+            -e "s|@DS_DIRTY_WB_CS@|${DS_DIRTY_WB_CS}|g" \
+            -e "s|@HAS_STAT@|${HAS_STAT}|g" \
+            -e "s|@HAS_WB@|${HAS_WB}|g" \
+            -e "s|@STAT_EXTERN@|${STAT_EXTERN}|g" \
+            -e "s|@WB_EXTERN@|${WB_EXTERN}|g" \
+            mm/cryo_deepsleep.c
+
+          grep -q 'cryo_deepsleep\.o' mm/Makefile \
+            || printf '\nobj-y += cryo_deepsleep.o\n' >> mm/Makefile
+
+          # ── 5. Verifikasi hasil ───────────────────────────────────────────────
+          [ -s mm/cryo_deepsleep.c ] || fail "cryo_deepsleep.c tidak terbentuk"
+          grep -qE '^obj-y \+= cryo_deepsleep\.o$' mm/Makefile || fail "mm/Makefile tidak memuat cryo_deepsleep.o"
+          if grep -qE '@[A-Z_]+@' mm/cryo_deepsleep.c; then fail "masih ada token yang belum terisi di cryo_deepsleep.c"; fi
+          grep -qE "^#define CRYO_DELAY_SEC[[:space:]]+${DS_DELAY_SEC}$" mm/cryo_deepsleep.c || fail "CRYO_DELAY_SEC tidak sesuai"
+          grep -qE "^#define CRYO_PASSES[[:space:]]+${DS_PASSES}$" mm/cryo_deepsleep.c || fail "CRYO_PASSES tidak sesuai"
+
+          STAT_TXT=dilewati; WB_TXT=dilewati
+          if (( HAS_STAT )); then STAT_TXT="${DS_STAT_SEC}s (default di sumber: ${DEF_STAT})"; fi
+          if (( HAS_WB ));   then WB_TXT="${DS_DIRTY_WB_CS}cs (default di sumber: ${DEF_WB})"; fi
+
+          # Detail CEDS untuk ringkasan akhir (job "Package Kernels")
+          # Format: varian|stat_interval|dirty_writeback|jumlah-pass|jeda-awal
+          echo "${VARIANT_NAME}|${STAT_TXT}|${WB_TXT}|${DS_PASSES}|${DS_DELAY_SEC}" > "$WORK_DIR/deepsleep_info.txt"
+
+          echo "✅ cryo_deepsleep terpasang | stat_interval: ${STAT_TXT} | dirty_writeback: ${WB_TXT} | pass: ${DS_PASSES} mulai +${DS_DELAY_SEC}s"
+          echo "ℹ️  Cek di perangkat: dmesg | grep cryo_deepsleep"
+
       - name: "🛡️ Guard VINTF"
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         run: |
@@ -2521,6 +2765,7 @@ jobs:
             ${{ env.WORK_DIR }}/config_check.txt
             ${{ env.WORK_DIR }}/ksu_info.txt
             ${{ env.WORK_DIR }}/bbr_info.txt
+            ${{ env.WORK_DIR }}/deepsleep_info.txt
           retention-days: 1
           if-no-files-found: ignore
           
@@ -2596,6 +2841,7 @@ jobs:
           CHECKS=$(find ./artifacts -type f -name config_check.txt 2>/dev/null | sort)
           KSU_INFOS=$(find ./artifacts -type f -name ksu_info.txt 2>/dev/null | sort)
           BBR_INFOS=$(find ./artifacts -type f -name bbr_info.txt 2>/dev/null | sort)
+          DS_INFOS=$(find ./artifacts -type f -name deepsleep_info.txt 2>/dev/null | sort)
           INFO_FILE="kernel_config_info.md"
           DATE_WIB=$(TZ=Asia/Jakarta date +'%Y-%m-%d')
 
@@ -2663,6 +2909,26 @@ jobs:
                     printf "| %s | %s | `%s` | `%s` | %s B | %s file, %s hunk, +%s/-%s | dipatch %s, offset %s, fuzz %s | %s |\n", \
                       vars[order[i]], p[1], p[2], substr(p[3],1,12), p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11], status }
                 }'
+            fi
+
+            # ── 4. CEDS (hanya jika dipasang) ─────────────────────────────────
+            if [ -n "$DS_INFOS" ]; then
+              echo
+              echo "### 💤 CEDS (built-in)"
+              # shellcheck disable=SC2086
+              cat $DS_INFOS | awk -F'|' '
+                { key=$2 "|" $3 "|" $4 "|" $5
+                  if (!(key in vars)) order[++n]=key
+                  vars[key]=vars[key] (vars[key]==""?"":", ") $1 }
+                END {
+                  print "| Varian | vm.stat_interval | vm.dirty_writeback_centisecs | Penegas runtime |"
+                  print "|---|---|---|---|"
+                  for (i=1;i<=n;i++) { split(order[i], p, "|")
+                    rt = (p[3]+0 > 0) ? p[3] " pass, mulai +" p[4] "s, jeda berlipat ganda" : "—"
+                    printf "| %s | %s | %s | %s |\n", vars[order[i]], p[1], p[2], rt }
+                }'
+              echo
+              echo 'Verifikasi di perangkat: `dmesg | grep cryo_deepsleep`'
             fi
 
             echo
