@@ -957,6 +957,15 @@ jobs:
 
           NEED_SUSFS_ORIG=$NEED_SUSFS_PATCH   # kebutuhan asli manager, sebelum input SUSFS menimpanya
 
+          # KowSU tidak punya SUSFS (tanpa config KSU_SUSFS, tanpa hook SUSFS di sisi KSU).
+          # Patch kernel SUSFS memanggil hook KSU yang tidak ada di KowSU (preinit, faccessat,
+          # stat, dll.), sehingga link gagal. Matikan SUSFS otomatis untuk manager ini.
+          if [ "$KSU_MANAGER" = "KowSU" ] && [ "$ENABLE_SUSFS" != "false" ]; then
+            echo "::warning::KowSU tidak mendukung SUSFS, SUSFS dinonaktifkan otomatis untuk build ini"
+            ENABLE_SUSFS=false
+            echo "SUSFS_SUPPORT=false" >> "$GITHUB_ENV"
+          fi
+
           # Logika untuk menonaktifkan SUSFS jika diminta pengguna
             if [ "$ENABLE_SUSFS" = "false" ]; then
                echo "ℹ️ Opsi SUSFS dinonaktifkan dari input. Mengabaikan kebutuhan patch SUSFS."
@@ -2766,7 +2775,7 @@ jobs:
           KERNEL_VARIANT: ${{ inputs.kernel_variant || 'all' }}
           KSU_MANAGER: ${{ inputs.ksu_manager || 'BakaSU' }}
           KSU_REF: ${{ inputs.ksu_ref }}
-          SUSFS_SUPPORT: ${{ format('{0}', inputs.susfsSupport) == 'false' && 'false' || 'true' }}
+          SUSFS_SUPPORT: ${{ env.SUSFS_SUPPORT }}
           SUSFS_COMMIT: ${{ inputs.susfs_commit }}
           DROIDSPACES_SUPPORT: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.droidspaces_support) != 'false' && 'true' || 'false' }}
           TOOLCHAIN_TYPE: ${{ inputs.toolchain_type || 'android-tools' }}
