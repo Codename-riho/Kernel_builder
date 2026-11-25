@@ -1,4 +1,4 @@
-name: "Build Cryo-Gemink Kernel "  
+name: "Build Cryo-Gemink Kernel GKICA (GKI + CLO merged source)"
   
 env:
   OUT_DIR: "out"
@@ -10,20 +10,20 @@ permissions:
   contents: read
   actions: read
 
+concurrency:
+  group: cryo-build-gemink-${{ github.ref }}
+  cancel-in-progress: false
+
 on: 
   workflow_dispatch:
      inputs:
       kernel_variant:
-        description: "Varian kernel yang dibuild (ksu/noksu x gki/clo; *-all = GKI dan CLO; all = semuanya)"
+        description: "Varian kernel GKICA yang dibuild (ksu / noksu / all = keduanya)"
         type: choice
         options:
           - all
-          - ksu-gki
-          - ksu-clo
-          - noksu-gki
-          - noksu-clo
-          - ksu-all
-          - noksu-all
+          - ksu
+          - noksu
         default: "all"
       ksu_manager:
         description: "Root manager untuk varian KSU"
@@ -85,33 +85,30 @@ on:
                                   
 jobs:
   build-kernels:
-    name: "❄️ Build Cryo ${{ matrix.base == 'gki' && 'GKI' || 'CLO' }}${{ matrix.ksu == 'noksu' && '-NoKSU' || '' }} kernel"
+    name: "❄️ Build Cryo-Gemink GKICA${{ matrix.ksu == 'noksu' && '-NoKSU' || '' }} kernel"
     runs-on: ubuntu-26.04
     timeout-minutes: 300
     strategy:
       fail-fast: false
       matrix:
-        base: ${{ fromJSON(
-          (inputs.kernel_variant == 'ksu-gki' || inputs.kernel_variant == 'noksu-gki') && '["gki"]' ||
-          (inputs.kernel_variant == 'ksu-clo' || inputs.kernel_variant == 'noksu-clo') && '["clo"]' ||
-          '["gki","clo"]' ) }}
+        base: ["gkica"]
         ksu: ${{ fromJSON(
-          (inputs.kernel_variant == 'ksu-gki' || inputs.kernel_variant == 'ksu-clo' || inputs.kernel_variant == 'ksu-all') && '["ksu"]' ||
-          (inputs.kernel_variant == 'noksu-gki' || inputs.kernel_variant == 'noksu-clo' || inputs.kernel_variant == 'noksu-all') && '["noksu"]' ||
+          inputs.kernel_variant == 'ksu' && '["ksu"]' ||
+          inputs.kernel_variant == 'noksu' && '["noksu"]' ||
           '["ksu","noksu"]' ) }}
     env:
-      KERNEL_TAG: ${{ matrix.base == 'gki' && 'GKI' || 'CLO' }}${{ matrix.ksu == 'noksu' && '-NoKSU' || '' }}
+      KERNEL_TAG: GKICA${{ matrix.ksu == 'noksu' && '-NoKSU' || '' }}
       KERNEL_LOC_DIR: common_${{ matrix.base }}${{ matrix.ksu == 'noksu' && '_noksu' || '' }}
-      KERNEL_NAME: ${{ matrix.base == 'gki' && 'common' || 'clo' }}
+      KERNEL_NAME: gkica
       KERNEL_REPO: https://github.com/Codename-riho/Kernel_builder.git
-      KERNEL_BRANCH: ${{ matrix.base == 'gki' && 'google' || 'codelinaro' }}
+      KERNEL_BRANCH: GKICA
       DEFCONFIG_NAME: gki_defconfig
-      LOCAL_VERSION: ${{ matrix.base == 'gki' && '-Cryo-GKI' || '-Cryo-CLO' }}
+      LOCAL_VERSION: -Cryo-GKICA
       OUTPUT_NAME: Image.${{ matrix.base }}.${{ matrix.ksu }}
       WORK_DIR: ${{ github.workspace }}
       
       # default aman untuk schedule + manual run
-      KERNEL_VARIANT: "${{ inputs.kernel_variant || 'all' }}"   # all | ksu-gki | ksu-clo | noksu-gki | noksu-clo | ksu-all | noksu-all
+      KERNEL_VARIANT: "${{ inputs.kernel_variant || 'all' }}"   # all | ksu | noksu
       TOOLCHAIN_TYPE: "${{ inputs.toolchain_type || 'android-tools' }}"
       DROIDSPACES_SUPPORT: "${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.droidspaces_support) != 'false' && 'true' || 'false' }}"   # mati saat schedule, ikut input saat manual
       SUSFS_SUPPORT: "${{ format('{0}', inputs.susfsSupport) == 'false' && 'false' || 'true' }}"   # bawaan: aktif
@@ -1497,6 +1494,23 @@ jobs:
           mkdir -p fs
           cp -f susfs4ksu/kernel_patches/fs/susfs.c fs/susfs.c
           echo "✅ Copied fs/susfs.c"
+
+          # tandai 2 fungsi helper agar tidak dianggap "unused"
+          sed -i -E \
+            -e 's/^static struct cred \*susfs_switch_to_ksu_domain\(void\)/static __maybe_unused struct cred *susfs_switch_to_ksu_domain(void)/' \
+            -e 's/^static void susfs_restore_creds\(/static __maybe_unused void susfs_restore_creds(/' \
+            fs/susfs.c
+
+          # Hanya fungsi yang memang ada sebagai "static" yang wajib ditandai
+          for fn in susfs_switch_to_ksu_domain susfs_restore_creds; do
+            if grep -qE "^static[^;(]*[[:space:]*]${fn}\(" fs/susfs.c; then
+              grep -qE "^static __maybe_unused[^;(]*[[:space:]*]${fn}\(" fs/susfs.c \
+                || { echo "::error::Gagal menandai ${fn} sebagai __maybe_unused di fs/susfs.c"; exit 1; }
+              echo "✅ ${fn}: ditandai __maybe_unused"
+            else
+              echo "ℹ️ ${fn}: bukan fungsi static di susfs.c (versi SUSFS berubah?), dilewati"
+            fi
+          done
           
           # Always replace include/linux/susfs.h
           mkdir -p include/linux
@@ -2404,7 +2418,7 @@ jobs:
           fi
           echo "Membaca $CONFIG_OUT"
 
-          CHECK_LIST="CONFIG_LTO_CLANG_FULL CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE CONFIG_KPROFILES CONFIG_TCP_CONG_BBR3 CONFIG_ZRAM_DEF_COMP_LZ4 "
+          CHECK_LIST="CONFIG_LTO_CLANG_FULL CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE CONFIG_KPROFILES CONFIG_TCP_CONG_BBR3 CONFIG_ZRAM_DEF_COMP_LZ4 CONFIG_CRYPTO_LZO CONFIG_DEBUG_INFO_BTF"
           if [ "$ENABLE_KSU" = "true" ]; then
             CHECK_LIST="$CHECK_LIST CONFIG_KSU"
             [ "${KSU_MANAGER:-}" = "SukiSU-Ultra+KPM" ] && CHECK_LIST="$CHECK_LIST CONFIG_KPM"
@@ -2443,7 +2457,7 @@ jobs:
           make ARCH=arm64 LLVM=1 $HOST O=out olddefconfig
 
           # Pastikan config penting tidak hilang setelah resolusi dependensi
-          CHECK_LIST="CONFIG_LTO_CLANG_FULL CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE CONFIG_KPROFILES CONFIG_TCP_CONG_BBR3 CONFIG_ZRAM_DEF_COMP_LZ4 "
+          CHECK_LIST="CONFIG_LTO_CLANG_FULL CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE CONFIG_KPROFILES CONFIG_TCP_CONG_BBR3 CONFIG_ZRAM_DEF_COMP_LZ4 CONFIG_CRYPTO_LZO CONFIG_DEBUG_INFO_BTF"
           if [ "$ENABLE_KSU" = "true" ]; then
             CHECK_LIST="$CHECK_LIST CONFIG_KSU"
             [ "${KSU_MANAGER:-}" = "SukiSU-Ultra+KPM" ] && CHECK_LIST="$CHECK_LIST CONFIG_KPM"
@@ -2827,13 +2841,9 @@ jobs:
             DROIDSPACES_TEXT="Enabled Proper Working"; fi
 
           case "$KERNEL_VARIANT" in
-            ksu-gki)   VARIANT_TEXT="KSU (GKI)" ;;
-            ksu-clo)   VARIANT_TEXT="KSU (CLO)" ;;
-            noksu-gki) VARIANT_TEXT="NoKSU (GKI)" ;;
-            noksu-clo) VARIANT_TEXT="NoKSU (CLO)" ;;
-            ksu-all)   VARIANT_TEXT="KSU (GKI + CLO)" ;;
-            noksu-all) VARIANT_TEXT="NoKSU (GKI + CLO)" ;;
-            *)         VARIANT_TEXT="KSU + NoKSU (GKI + CLO, semua varian)" ;;
+            ksu)   VARIANT_TEXT="KSU (GKICA)" ;;
+            noksu) VARIANT_TEXT="NoKSU (GKICA)" ;;
+            *)     VARIANT_TEXT="KSU + NoKSU (GKICA, semua varian)" ;;
           esac
 
           MANAGER=$(printf '%s' "$KSU_MANAGER${KSU_REF:+ @ $KSU_REF}" | esc)
@@ -2864,7 +2874,7 @@ jobs:
           <b>📦 Build Information:</b>
           • Kernel: <code>Linux ${KVER_SHOW}</code>
           • Android: <code>13-16</code>
-          • Branch: <code>android13-5.15-lts</code> (GKI), <code>kernel.lnx.5.15.r16-rel</code> (CLO)
+          • Branch: <code>GKICA</code> (android13-5.15-lts + kernel.lnx.5.15.r16-rel)
           • Device: <code>${DEVICE_NAME}</code>
 
           <b>👾 Configuration:</b>
@@ -2875,7 +2885,7 @@ jobs:
           • KSU Manager: <code>${MANAGER}</code>
           • SUSFS: <code>${SUSFS_TEXT}</code>
           • Droidspaces: <code>${DROIDSPACES_TEXT}</code>
-          • Local Version: <code>Cryo-GKI-${DATE}</code>, <code>Cryo-CLO-${DATE}</code>
+          • Local Version: <code>Cryo-GKICA-${DATE}</code>
           • Build Tools: <code>${BUILD_TOOLS}</code>
 
           🕐 <b>Build Date:</b> $(TZ=Asia/Jakarta date '+%Y-%m-%d %H:%M:%S WIB')
@@ -2915,7 +2925,7 @@ jobs:
 
           <b>📦 Build Information:</b>
           • Kernel: <code>Linux ${KVER_SHOW}</code>
-          • Branch: <code>android13-5.15-lts</code> (GKI), <code>kernel.lnx.5.15.r16-rel</code> (CLO)
+          • Branch: <code>GKICA</code> (android13-5.15-lts + kernel.lnx.5.15.r16-rel)
           • Device: <code>$(printf '%s' "$DEVICE_NAME" | esc)</code>
 
           <b>👾 Configuration:</b>
