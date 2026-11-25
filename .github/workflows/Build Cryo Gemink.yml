@@ -933,7 +933,7 @@ jobs:
               ;;
             SukiSU-Nova+KPM)
               REPO="SukiSU-Nova/SukiSU-Nova"
-              SETUP_BRANCH=main
+              SETUP_BRANCH=builtin
               DEFAULT_REF=builtin
               NEED_SUSFS_PATCH=0
               ;;
@@ -1226,11 +1226,11 @@ jobs:
           scripts/config --file "$CONFIG_PATH" -e CONFIG_KSU
 
           KPM_STATE=""
-          if [ "$KSU_MANAGER" = "SukiSU-Ultra+KPM" ]; then
+          if [ "$KSU_MANAGER" = "SukiSU-Nova+KPM" ]; then
             scripts/config --file "$CONFIG_PATH" -e CONFIG_KPM -e CONFIG_KALLSYMS_ALL
             KPM_STATE="aktif"
           else
-            echo "ℹ️ KPM dilewati (hanya untuk SukiSU-Ultra+KPM)."
+            echo "ℹ️ KPM dilewati (hanya untuk SukiSU-Nova+KPM)."
           fi
 
           VER=$(git -C "$KSU_DIR" describe --tags --always 2>/dev/null || echo Unknown)
@@ -2406,7 +2406,7 @@ jobs:
           CHECK_LIST="CONFIG_LTO_CLANG_FULL CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE CONFIG_KPROFILES CONFIG_TCP_CONG_BBR3 CONFIG_ZRAM_DEF_COMP_LZ4 CONFIG_CRYPTO_LZO CONFIG_DEBUG_INFO_BTF"
           if [ "$ENABLE_KSU" = "true" ]; then
             CHECK_LIST="$CHECK_LIST CONFIG_KSU"
-            [ "${KSU_MANAGER:-}" = "SukiSU-Ultra+KPM" ] && CHECK_LIST="$CHECK_LIST CONFIG_KPM"
+            [ "${KSU_MANAGER:-}" = "SukiSU-Nova+KPM" ] && CHECK_LIST="$CHECK_LIST CONFIG_KPM"
             [ "${SUSFS_SUPPORT:-}" = "true" ] && CHECK_LIST="$CHECK_LIST CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER"
           fi
           ENABLED=" $({ grep -E '^CONFIG_[A-Za-z0-9_]+=y$' "$CONFIG_OUT" || true; } | cut -d= -f1 | tr '\n' ' ') "
@@ -2445,7 +2445,7 @@ jobs:
           CHECK_LIST="CONFIG_LTO_CLANG_FULL CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE CONFIG_KPROFILES CONFIG_TCP_CONG_BBR3 CONFIG_ZRAM_DEF_COMP_LZ4 CONFIG_CRYPTO_LZO CONFIG_DEBUG_INFO_BTF"
           if [ "$ENABLE_KSU" = "true" ]; then
             CHECK_LIST="$CHECK_LIST CONFIG_KSU"
-            [ "${KSU_MANAGER:-}" = "SukiSU-Ultra+KPM" ] && CHECK_LIST="$CHECK_LIST CONFIG_KPM"
+            [ "${KSU_MANAGER:-}" = "SukiSU-Nova+KPM" ] && CHECK_LIST="$CHECK_LIST CONFIG_KPM"
             [ "${SUSFS_SUPPORT:-}" = "true" ] && CHECK_LIST="$CHECK_LIST CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER"
           fi
 
