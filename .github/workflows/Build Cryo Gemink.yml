@@ -30,12 +30,10 @@ on:
         type: choice
         options:
           - BakaSU 
-          - Cryo
-          - SukiSU-Ultra+KPM
+          - KowSU
+          - SukiSU-Nova+KPM
           - KernelSU-Next-pershoot 
           - KernelSU-Official
-          - BakaSU-susfs
-          - KernelSU-Next-pershoot_selinux-hide
         default: "BakaSU"
       ksu_ref:
         description: "Opsional: branch/tag manager (kosong = bawaan tiap manager)"
@@ -927,20 +925,14 @@ jobs:
               DEFAULT_REF=main
               NEED_SUSFS_PATCH=0
               ;;
-            BakaSU-susfs)
-              REPO="Baka-SU/BakaSU"
-              SETUP_BRANCH=sync-up
-              DEFAULT_REF=sync-up
-              NEED_SUSFS_PATCH=0
+            KowSU)
+             REPO="KOWX712/KernelSU"
+             SETUP_BRANCH=master
+             DEFAULT_REF=master
+             NEED_SUSFS_PATCH=1   # SUSFS lewat patch khusus KowSU (kowsu-susfs)
               ;;
-            Cryo)
-              REPO="Codename-riho/CryoSU"
-              SETUP_BRANCH=main
-              DEFAULT_REF=main
-              NEED_SUSFS_PATCH=0
-              ;;
-            SukiSU-Ultra+KPM)
-              REPO="SukiSU-Ultra/SukiSU-Ultra"
+            SukiSU-Nova+KPM)
+              REPO="SukiSU-Nova/SukiSU-Nova"
               SETUP_BRANCH=main
               DEFAULT_REF=builtin
               NEED_SUSFS_PATCH=0
@@ -949,13 +941,6 @@ jobs:
               REPO="pershoot/KernelSU-Next"
               SETUP_BRANCH=dev-susfs
               DEFAULT_REF=dev-susfs
-              NEED_SUSFS_PATCH=0
-              EXTRA_PATCH_URL="$KSUN_MULTI_PATCH"
-              ;;
-            KernelSU-Next-pershoot_selinux-hide)
-              REPO="pershoot/KernelSU-Next"
-              SETUP_BRANCH=dev-susfs-selinux_hide
-              DEFAULT_REF=dev-susfs-selinux_hide
               NEED_SUSFS_PATCH=0
               EXTRA_PATCH_URL="$KSUN_MULTI_PATCH"
               ;;
