@@ -467,8 +467,7 @@ jobs:
             "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/${TN_REF}/0001-gki-fixup.patch" \
             "https://raw.githubusercontent.com/Codename-riho/Kernel_builder/refs/heads/Builders/.github/Patches/0001-scripts-sign-builds.patch" \
             "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/${TN_REF}/0001-scripts-Don-t-append-and-dirty-to-localversion.patch" \
-            "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/${TN_REF}/0001-scripts-do-not-ship-full-auto_localversion.patch" \
-            "https://raw.githubusercontent.com/Codename-riho/Kernel_builder/refs/heads/Builders/.github/Patches/boeffla-wl-blocker.patch")
+            "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/${TN_REF}/0001-scripts-do-not-ship-full-auto_localversion.patch")
             
           # Use scripts/config for safe config manipulation
           scripts/config --file "$CONFIG_FILE" \
@@ -515,9 +514,6 @@ jobs:
           # Remove duplicate lines safely
           sed -i '/ZRAM_DEF_COMP_LZO/d' "$CONFIG_FILE" || true
 
-          # Boeffla wakelock blocker: simbol Kconfig-nya sekarang benar-benar ada di tree
-          # (ditambahkan oleh patch boeffla-wl-blocker.patch di atas), jadi -e di sini ikut tersimpan.
-          scripts/config --file "$CONFIG_FILE" -e CONFIG_BOEFFLA_WL_BLOCKER
 
           #Petakan konfigurasi otomatis untuk shuedule
             echo "📦 TOOLCHAIN_TYPE=${TOOLCHAIN_TYPE}"

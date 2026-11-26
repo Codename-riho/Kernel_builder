@@ -15,7 +15,7 @@ on:
         description: "Daftar CONFIG_* yang dicek (pisahkan dengan spasi atau koma)"
         type: string
         required: true
-        default: "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE CONFIG_KPROFILES CONFIG_TCP_CONG_BBR3 CONFIG_LRU_GEN CONFIG_UCLAMP_TASK CONFIG_CPU_FREQ_GOV_WALT CONFIG_ZRAM_DEF_COMP_LZ4 CONFIG_BOEFFLA_WL_BLOCKER"
+        default: "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE CONFIG_KPROFILES CONFIG_TCP_CONG_BBR3 CONFIG_LRU_GEN CONFIG_UCLAMP_TASK CONFIG_CPU_FREQ_GOV_WALT CONFIG_ZRAM_DEF_COMP_LZ4"
       simulate_enable:
         description: "Simulasikan aktifkan (-e) semua config di atas sebelum olddefconfig?"
         type: boolean
