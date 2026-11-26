@@ -1688,23 +1688,6 @@ jobs:
           mkdir -p fs
           cp -f susfs4ksu/kernel_patches/fs/susfs.c fs/susfs.c
           echo "✅ Copied fs/susfs.c"
-
-          # tandai 2 fungsi helper agar tidak dianggap "unused"
-          sed -i -E \
-            -e 's/^static struct cred \*susfs_switch_to_ksu_domain\(void\)/static __maybe_unused struct cred *susfs_switch_to_ksu_domain(void)/' \
-            -e 's/^static void susfs_restore_creds\(/static __maybe_unused void susfs_restore_creds(/' \
-            fs/susfs.c
-
-          # Hanya fungsi yang memang ada sebagai "static" yang wajib ditandai
-          for fn in susfs_switch_to_ksu_domain susfs_restore_creds; do
-            if grep -qE "^static[^;(]*[[:space:]*]${fn}\(" fs/susfs.c; then
-              grep -qE "^static __maybe_unused[^;(]*[[:space:]*]${fn}\(" fs/susfs.c \
-                || { echo "::error::Gagal menandai ${fn} sebagai __maybe_unused di fs/susfs.c"; exit 1; }
-              echo "✅ ${fn}: ditandai __maybe_unused"
-            else
-              echo "ℹ️ ${fn}: bukan fungsi static di susfs.c (versi SUSFS berubah?), dilewati"
-            fi
-          done
           
           # Always replace include/linux/susfs.h
           mkdir -p include/linux
@@ -1784,53 +1767,6 @@ jobs:
           echo "Hilang: $MISSING/$TOTAL | ksu_selinux_hide_running: $(grep -c ksu_selinux_hide_running security/selinux/hooks.c 2>/dev/null)"
           [ "$MISSING" -eq 0 ] || echo "::warning::Ada hook SUSFS di kernel yang tidak punya pasangan di KSU, link akan gagal"
           )
-
-      - name: "💉 Safe-mode inject PRIORITY_UID_FILTER"
-        if: ${{ matrix.ksu == 'ksu' && env.SUSFS_SUPPORT == 'true' }}
-        shell: bash
-        working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
-        env:
-          DEFCONFIG_NAME: ${{ env.DEFCONFIG_NAME }}
-        run: |
-          set -euo pipefail
-          SYM="KSU_SUSFS_PRIORITY_UID_FILTER"
-          KCONF="$(readlink -f drivers/kernelsu/Kconfig 2>/dev/null || true)"
-          DEFCONFIG="arch/arm64/configs/${DEFCONFIG_NAME}"
-
-          if [ ! -f "$KCONF" ] || ! grep -q '^config KSU_SUSFS$' "$KCONF"; then
-            echo "::warning::SUSFS tidak ada di Kconfig KSU, injeksi ${SYM} dilewati"; exit 0
-          fi
-
-          if grep -q "^config ${SYM}\$" "$KCONF"; then
-            echo "ℹ️ ${SYM} sudah dideklarasikan oleh patch"
-          else
-            tmp="$(mktemp)"
-            awk -v sym="$SYM" '
-              /^menu "KernelSU - SUSFS"/ { insus=1 }
-              insus && /^endmenu/ && !done {
-                print "config " sym
-                print "\tbool \"Enable priority uid filter for SUSFS\""
-                print "\tdepends on KSU_SUSFS"
-                print "\tdefault y"
-                print "\thelp"
-                print "\t  Manual injection (workflow safe mode)."
-                print ""
-                done=1; insus=0
-              }
-              { print }
-              END { exit(done ? 0 : 3) }
-            ' "$KCONF" > "$tmp" || { rm -f "$tmp"; echo "::warning::menu SUSFS tidak ditemukan, injeksi dibatalkan"; exit 0; }
-            cat "$tmp" > "$KCONF"; rm -f "$tmp"
-            echo "💉 Deklarasi ${SYM} disuntikkan ke Kconfig KSU"
-          fi
-
-          grep -q "^CONFIG_${SYM}=y" "$DEFCONFIG" || echo "CONFIG_${SYM}=y" >> "$DEFCONFIG"
-
-          if grep -rIq "CONFIG_${SYM}" drivers/kernelsu/ fs/ include/linux/ 2>/dev/null; then
-            echo "✅ Source mereferensikan CONFIG_${SYM}"
-          else
-            echo "ℹ️ Source tidak mereferensikan CONFIG_${SYM}: fitur kemungkinan selalu terkompilasi (tanpa gate)"
-          fi
 
       - name: "📝 Append custom Makefile line"
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
