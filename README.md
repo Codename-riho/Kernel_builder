@@ -51,6 +51,7 @@ Cryo Kernel ships a patch that lets the kernel trust more than one KernelSU mana
 - By default only the **owner (user 0)** can use a manager. Copies in secondary users or dual apps are rejected. Build with `KSU_MANAGER_ALL_USERS=1` to allow every user.
 - Driver calls that are reserved for managers also reject kernel threads and processes whose euid differs from their uid.
 - Override the trusted list with `KSU_NEXT_MANAGER_LIST` (format: `<cert size>:<sha256 of cert>`, comma-separated).
+- Add signatures **on top of** the default list with `KSU_NEXT_MANAGER_EXTRA` (same format). If a manager shows "no driver", run `dmesg | grep "manager candidate"`: every scanned APK is logged with its certificate `sha256`, and that hash is what goes into `KSU_NEXT_MANAGER_EXTRA`.
 
 **Important:** use only **one manager app at a time** in practice. All managers share a single `/data/adb/ksud`, and a manager that uses a different ioctl protocol than the KernelSU-Next driver will not work. Every active manager has full root control, so only install managers you trust.
 
