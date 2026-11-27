@@ -98,7 +98,7 @@ This project stands on the work of many others. Thank you to everyone below.
 - [ravindu644/Droidspaces-OSS](https://github.com/ravindu644/Droidspaces-OSS) Droidspaces GKI kernel patches
 - [RapliVx](https://github.com/RapliVx) For the base KSUN Multi Manager patch
 - [NotPichayut](https://github.com/NotPichayut) For the base Kernel Version Spoof script
-- [kusonekoworld-max](https://github.com/kusonekoworld-max) – Base SUSFS Script, and Reflex + Vorpal implementation
+- [kusonekoworld-max](https://github.com/kusonekoworld-max) – Base SUSFS Script, and Reflex + Vorpal implementation (for gemink build)
 
 **Toolchain and build tools**
 - Google AOSP Clang (`android-tools`, `build/build.sh`)
