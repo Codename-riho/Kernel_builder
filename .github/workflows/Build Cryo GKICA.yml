@@ -474,7 +474,6 @@ jobs:
             -e CONFIG_KALLSYMS \
             -e CONFIG_KALLSYMS_ALL \
             -e CONFIG_TCP_CONG_ADVANCED \
-            -d CONFIG_QCOM_DLOAD_MODE \
             -d CONFIG_TCP_CONG_BIC \
             -d CONFIG_TCP_CONG_HTCP \
             -e CONFIG_TCP_CONG_WESTWOOD \
