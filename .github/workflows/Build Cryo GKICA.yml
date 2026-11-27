@@ -30,6 +30,7 @@ on:
         type: choice
         options:
           - BakaSU 
+          - BakaSU-dev
           - KowSU
           - SukiSU-Nova+KPM
           - KernelSU-Next-pershoot 
@@ -1043,6 +1044,12 @@ jobs:
               REPO="Baka-SU/BakaSU"
               SETUP_BRANCH=main
               DEFAULT_REF=main
+              NEED_SUSFS_PATCH=0
+              ;;
+            BakaSU-dev)
+              REPO="Baka-SU/BakaSU"
+              SETUP_BRANCH=dev
+              DEFAULT_REF=dev
               NEED_SUSFS_PATCH=0
               ;;
             KowSU)
