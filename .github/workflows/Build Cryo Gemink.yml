@@ -80,6 +80,14 @@ on:
         required: false
         type: string
         default: ""
+      extraGovernor:
+        description: "Add Extra Governor Options"
+        required: false
+        type: choice
+        default: "reflex + vorpal"
+        options:
+          - "reflex + vorpal"
+          - "none"
                                   
 jobs:
   build-kernels:
@@ -110,6 +118,7 @@ jobs:
       TOOLCHAIN_TYPE: "${{ inputs.toolchain_type || 'android-tools' }}"
       DROIDSPACES_SUPPORT: "${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.droidspaces_support) != 'false' && 'true' || 'false' }}"   # mati saat schedule, ikut input saat manual
       SUSFS_SUPPORT: "${{ format('{0}', inputs.susfsSupport) == 'false' && 'false' || 'true' }}"   # bawaan: aktif
+      EXTRA_GOVERNOR: "${{ inputs.extraGovernor || 'reflex + vorpal' }}"   # reflex + vorpal | none
       KSU_MANAGER: "${{ inputs.ksu_manager || 'BakaSU' }}"
       KSU_REF: "${{ inputs.ksu_ref || '' }}"
       SUSFS_COMMIT: "${{ inputs.susfs_commit || '' }}"
@@ -894,6 +903,130 @@ jobs:
           warn "Inject Kprofiles gagal, dilewati. Kprofiles dinonaktifkan dan build tetap lanjut"
           exit 0
           
+      - name: "🎮 Inject reflex + vorpal gemink governor"
+        if: ${{ env.EXTRA_GOVERNOR == 'reflex + vorpal' }}
+        shell: bash
+        working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
+        run: |
+          set -euo pipefail
+
+          # Sumber governor (Koneko Kernel). Unduhan memakai -f supaya halaman error 404
+          # tidak tersimpan sebagai file .c, dan ukurannya dicek.
+          REFLEX_BASE="https://raw.githubusercontent.com/kusonekoworld-max/KonekoKernel-GKI/refs/heads/main/.github/actions/build-kernel/patches/reflex"
+          VORPAL_BASE="https://raw.githubusercontent.com/yougotme101/KonekoKernel-GKI/refs/heads/main/.github/actions/build-kernel/patches/vorpal"
+
+          fetch() {   # fetch <url> <tujuan>
+            curl -fsSL --retry 3 --retry-delay 2 -o "$2" "$1" \
+              || { echo "::error::Gagal mengunduh $1"; exit 1; }
+            [ -s "$2" ] || { echo "::error::File kosong: $2 (dari $1)"; exit 1; }
+          }
+
+          CONFIG_FILE="arch/arm64/configs/${{ env.DEFCONFIG_NAME }}"
+          mkdir -p kernel/sched
+
+          # ── 1) Reflex ──────────────────────────────────────────────────
+          echo "::group::⚙️ Inject Reflex Governor"
+          fetch "$REFLEX_BASE/cpufreq_reflex.c" kernel/sched/cpufreq_reflex.c
+
+          if ! grep -q "cpufreq_reflex.o" "kernel/sched/Makefile"; then
+            echo 'obj-$(CONFIG_CPU_FREQ_GOV_REFLEX) += cpufreq_reflex.o' >> "kernel/sched/Makefile"
+          fi
+
+          if ! grep -q "config CPU_FREQ_GOV_REFLEX" "drivers/cpufreq/Kconfig"; then
+            printf "\nconfig CPU_FREQ_GOV_REFLEX\n" >> "drivers/cpufreq/Kconfig"
+            printf "\ttristate \"'reflex' cpufreq governor\"\n" >> "drivers/cpufreq/Kconfig"
+            printf "\tdepends on CPU_FREQ && SMP\n" >> "drivers/cpufreq/Kconfig"
+            printf "\tselect CPU_FREQ_GOV_ATTR_SET\n" >> "drivers/cpufreq/Kconfig"
+            printf "\thelp\n" >> "drivers/cpufreq/Kconfig"
+            printf "\t  'reflex' is an advanced CPU frequency governor based on schedutil,\n" >> "drivers/cpufreq/Kconfig"
+            printf "\t  featuring idle-time accounting and PELT-complementary exponential decay.\n" >> "drivers/cpufreq/Kconfig"
+          fi
+
+          grep -q "^CONFIG_CPU_FREQ_GOV_REFLEX=" "$CONFIG_FILE" || echo "CONFIG_CPU_FREQ_GOV_REFLEX=y" >> "$CONFIG_FILE"
+          echo "::endgroup::"
+
+          # ── 2) Vorpal + kompatibilitas GKI510 ──────────────────────────
+          echo "::group::⚙️ Inject Vorpal Governor + GKI510 Compat"
+          fetch "$VORPAL_BASE/cpufreq_vorpal.c"      kernel/sched/cpufreq_vorpal.c
+          fetch "$VORPAL_BASE/rfx_gki510_compat.c"   kernel/sched/rfx_gki510_compat.c
+
+          if ! grep -q "cpufreq_vorpal.o" "kernel/sched/Makefile"; then
+            echo 'obj-$(CONFIG_CPU_FREQ_GOV_VORPAL) += cpufreq_vorpal.o' >> "kernel/sched/Makefile"
+          fi
+
+          if ! grep -q "rfx_gki510_compat.o" "kernel/sched/Makefile"; then
+            echo 'obj-y += rfx_gki510_compat.o' >> "kernel/sched/Makefile"
+          fi
+
+          if ! grep -q "config CPU_FREQ_GOV_VORPAL" "drivers/cpufreq/Kconfig"; then
+            printf "\nconfig CPU_FREQ_GOV_VORPAL\n" >> "drivers/cpufreq/Kconfig"
+            printf "\ttristate \"'vorpal' cpufreq governor\"\n" >> "drivers/cpufreq/Kconfig"
+            printf "\tdepends on CPU_FREQ && SMP\n" >> "drivers/cpufreq/Kconfig"
+            printf "\tselect CPU_FREQ_GOV_ATTR_SET\n" >> "drivers/cpufreq/Kconfig"
+            printf "\thelp\n" >> "drivers/cpufreq/Kconfig"
+            printf "\t  'vorpal' is a schedutil-based governor tuned for\n" >> "drivers/cpufreq/Kconfig"
+            printf "\t  gaming/thermal-aware dual-profile operation.\n" >> "drivers/cpufreq/Kconfig"
+          fi
+
+          grep -q "^CONFIG_CPU_FREQ_GOV_VORPAL=" "$CONFIG_FILE" || echo "CONFIG_CPU_FREQ_GOV_VORPAL=y" >> "$CONFIG_FILE"
+          echo "::endgroup::"
+
+          # ── 3) Perbaikan bug init input-handler Vorpal ─────────────────
+          echo "::group::⚙️ Fix Vorpal Input-Handler Init Bug"
+          VORPAL_C="kernel/sched/cpufreq_vorpal.c"
+
+          if ! grep -q "bool input_ok;" "$VORPAL_C"; then
+            perl -0pi -e 's{(static int __init vorpal_gov_init\(void\)\n\{\n\tint ret;\n)}{$1\tbool input_ok;\n}' "$VORPAL_C"
+          fi
+
+          if ! grep -q "input_ok = !input_register_handler" "$VORPAL_C"; then
+            perl -0pi -e 's{\tif \(input_register_handler\(&rfx_input_handler\)\)\n\t\tpr_warn\("vorpal: input handler register failed \(touch boost off\)\\n"\);}{\tinput_ok = !input_register_handler(&rfx_input_handler);\n\tif (!input_ok)\n\t\tpr_warn("vorpal: input handler register failed (touch boost off)\\n");}' "$VORPAL_C"
+          fi
+
+          if ! grep -q "if (input_ok)" "$VORPAL_C"; then
+            perl -0pi -e 's{\tret = cpufreq_register_governor\(&vorpal_gov\);\n\tif \(ret\) \{\n\t\tinput_unregister_handler\(&rfx_input_handler\);\n\t\tcancel_delayed_work_sync\(&rfx_thermal_work\);\n\t\}}{\tret = cpufreq_register_governor(&vorpal_gov);\n\tif (ret) \{\n\t\tif (input_ok)\n\t\t\tinput_unregister_handler(&rfx_input_handler);\n\t\tcancel_delayed_work_sync(&rfx_thermal_work);\n\t\}}' "$VORPAL_C"
+          fi
+
+          grep -q "bool input_ok;" "$VORPAL_C" \
+            || { echo "::error::Gagal menyuntikkan 'bool input_ok;' ke vorpal_gov_init()"; exit 1; }
+          grep -q "input_ok = !input_register_handler" "$VORPAL_C" \
+            || { echo "::error::Gagal mengubah pemanggilan input_register_handler() di vorpal_gov_init()"; exit 1; }
+          grep -q "if (input_ok)" "$VORPAL_C" \
+            || { echo "::error::Gagal menjaga input_unregister_handler() di jalur error vorpal_gov_init()"; exit 1; }
+          echo "::endgroup::"
+
+          # ── 4) Bias Gaming-Mode di fair.c ──────────────────────────────
+          echo "::group::⚙️ Inject Vorpal Gaming-Mode Bias into fair.c"
+          FAIR_C="kernel/sched/fair.c"
+
+          if ! grep -q "extern int sched_gaming_active;" "$FAIR_C"; then
+            perl -0pi -e 's{(static unsigned int normalized_sysctl_sched_latency\s*=\s*6000000ULL;)}{$1\n\nextern int sched_gaming_active;\n\n#define GAMING_VRUNTIME_STRETCH\t\t4\n}' "$FAIR_C"
+          fi
+
+          if ! grep -q "GAMING_VRUNTIME_STRETCH - 1" "$FAIR_C"; then
+            perl -0pi -e 's{(\tcurr->vruntime \+= calc_delta_fair\(delta_exec, curr\);\n)(\tupdate_min_vruntime\(cfs_rq\);\n)}{$1\n\tif (unlikely(sched_gaming_active \&\& !entity_is_task(curr))) {\n\t\tcurr->vruntime += calc_delta_fair(delta_exec * (GAMING_VRUNTIME_STRETCH - 1), curr);\n\t} else if (unlikely(sched_gaming_active \&\& entity_is_task(curr) \&\&\n\t\t\t     curr->avg.load_avg < 100)) {\n\t\tcurr->vruntime += calc_delta_fair(delta_exec, curr);\n\t}\n$2}' "$FAIR_C"
+          fi
+
+          if ! grep -q "ideal_runtime / 2" "$FAIR_C"; then
+            perl -0pi -e 's{(\tdelta_exec = curr->sum_exec_runtime - curr->prev_sum_exec_runtime;\n)(\ttrace_android_rvh_check_preempt_tick)}{$1\n\tif (unlikely(sched_gaming_active) \&\& entity_is_task(curr)) {\n\t\tstruct task_struct *p = task_of(curr);\n\n\t\tif (p->static_prio > DEFAULT_PRIO \&\n\t\t    delta_exec > ideal_runtime / 2)\n\t\t\tresched_curr(rq_of(cfs_rq));\n\t}\n\n$2}' "$FAIR_C"
+          fi
+
+          if ! grep -q "NSEC_PER_MSEC" "$FAIR_C"; then
+            perl -0pi -e 's{(\tfor_each_sched_entity\(se\) \{\n\t\tcfs_rq = cfs_rq_of\(se\);\n\n)(\t\tupdate_load_avg\(cfs_rq, se, UPDATE_TG\);\n\t\tse_update_runnable\(se\);\n\t\tupdate_cfs_group\(se\);)}{$1\t\tif (unlikely(sched_gaming_active \&\& entity_is_task(se) \&\&\n\t\t\t     task_of(se)->static_prio <= DEFAULT_PRIO))\n\t\t\tse->vruntime -= min_t(u64, se->vruntime, NSEC_PER_MSEC);\n\n$2}' "$FAIR_C"
+          fi
+
+          if ! grep -q "Gaming task isolation" "$FAIR_C"; then
+            perl -0pi -e 's{(\tdelta = rq_clock_task\(env->src_rq\) - p->se\.exec_start;\n\n)(\treturn delta < \(s64\)sysctl_sched_migration_cost;\n\}\n)}{$1\t/* Gaming task isolation */\n\tif (sched_gaming_active) {\n\t\tif (capacity_orig_of(env->dst_cpu) < capacity_orig_of(env->src_cpu) \&\&\n\t\t    task_util(p) > (capacity_orig_of(env->src_cpu) >> 3))\n\t\t\treturn 1;\n\t\treturn delta < (s64)sysctl_sched_migration_cost * 2;\n\t}\n\n$2}' "$FAIR_C"
+          fi
+
+          for MARK in "extern int sched_gaming_active;" "GAMING_VRUNTIME_STRETCH - 1" "ideal_runtime / 2" "NSEC_PER_MSEC" "Gaming task isolation"; do
+            grep -qF "$MARK" "$FAIR_C" \
+              || { echo "::error::Gagal menyuntikkan patch gaming ke fair.c, penanda hilang: $MARK"; exit 1; }
+          done
+          echo "::endgroup::"
+
+          echo "✅ Reflex + Vorpal terpasang (governor default tetap diatur oleh step walt)"
+
       - name: "🏜️📦 Add Droidspaces Support (kABI patch + GKI defconfig)"
         if: ${{ env.DROIDSPACES_SUPPORT == 'true' }}
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
