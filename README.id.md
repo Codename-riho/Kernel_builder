@@ -98,6 +98,7 @@ Proyek ini berdiri di atas karya banyak pihak. Terima kasih kepada semua yang te
 - [ravindu644/Droidspaces-OSS](https://github.com/ravindu644/Droidspaces-OSS) patch kernel GKI untuk Droidspaces
 - [RapliVx](https://github.com/RapliVx) Untuk basis patch KSUN Multi Manager
 - [NotPichayut](https://github.com/NotPichayut) Untuk basis script Kernel Version Spoof
+- [kusonekoworld-max](https://github.com/kusonekoworld-max) –  Base SUSFS Script, dan implementasi Reflex + Vorpal Governor (untuk build gemink)
 
 **Toolchain dan alat build**
 - Google AOSP Clang (`android-tools`, `build/build.sh`)
