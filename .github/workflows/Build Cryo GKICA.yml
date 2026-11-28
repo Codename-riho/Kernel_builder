@@ -178,7 +178,7 @@ jobs:
             echo "vm.swappiness=90" | sudo tee -a /etc/sysctl.conf
             sudo sysctl -p
         
-      - name: "🎭 Clone kernel source"
+      - name: "📁 Clone kernel source"
         working-directory: ./${{ env.KERNEL_LOC_DIR }}
         run: |
           set -euo pipefail
