@@ -1807,6 +1807,14 @@ jobs:
           fi
           # Tool host (dtc): redam peringatan clang baru. Harus KBUILD_HOSTCFLAGS, bukan HOSTCFLAGS.
           echo 'KBUILD_HOSTCFLAGS += -Wno-unused-but-set-global' >> Makefile
+
+          # Optimasi -O3 selektif untuk dekompresi ZRAM & Crypto (tanpa mengganggu driver GPU/hook)
+          for m in lib/lz4/Makefile lib/zstd/Makefile lib/lzo/Makefile crypto/Makefile; do
+            if [ -f "$m" ] && ! grep -q 'ccflags-y += -O3' "$m"; then
+              echo 'ccflags-y += -O3' >> "$m"
+              echo "⚡ -O3 diterapkan pada $m"
+            fi
+          done
           
           echo "✅ Flag Makefile ($TOOLCHAIN_TYPE) ditambahkan"
 
