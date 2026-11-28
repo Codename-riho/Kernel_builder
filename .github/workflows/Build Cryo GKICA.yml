@@ -1069,7 +1069,7 @@ jobs:
               REPO="KernelSU-Next/KernelSU-Next"
               SETUP_BRANCH=dev
               DEFAULT_REF=dev
-              NEED_SUSFS_PATCH=1
+              NEED_SUSFS_PATCH=0
               ;;
             KSUN-SUSFS)
               REPO="pershoot/KernelSU-Next"
