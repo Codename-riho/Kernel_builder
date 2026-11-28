@@ -46,9 +46,9 @@ Workflows live in [`.github/workflows`](.github/workflows):
 
 Cryo Kernel ships a patch that lets the kernel trust more than one KernelSU manager signature, including **spoofed** manager builds that use a random package name.
 
-- Several signatures are trusted, but **at most 1 managers are active at the same time**.
+- All 12 signatures from the supported KernelSU forks are trusted and up to **8 managers can be active at once** (override with `KSU_MAX_MANAGERS=1..16`).
 - Only real app UIDs (10000-19999) can become managers.
-- By default only the **owner (user 0)** can use a manager. Copies in secondary users or dual apps are rejected. Build with `KSU_MANAGER_ALL_USERS=1` to allow every user.
+- Managers are recognized in **every user** (Work Profile / Private Space / dual apps). Build with `KSU_MANAGER_OWNER_ONLY=1` to restrict them to the owner (user 0).
 - Driver calls that are reserved for managers also reject kernel threads and processes whose euid differs from their uid.
 - Override the trusted list with `KSU_NEXT_MANAGER_LIST` (format: `<cert size>:<sha256 of cert>`, comma-separated).
 

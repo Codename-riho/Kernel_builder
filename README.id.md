@@ -46,9 +46,9 @@ Workflow berada di [`.github/workflows`](.github/workflows):
 
 Cryo Kernel membawa patch yang membuat kernel memercayai lebih dari satu tanda tangan manager KernelSU, termasuk manager versi **spoofed** yang memakai package name acak.
 
-- Beberapa tanda tangan dipercaya, tetapi **maksimal 1 manager aktif bersamaan**.
+- Ke-12 tanda tangan dari fork KernelSU yang didukung dipercaya dan **maksimal 8 manager aktif bersamaan** (ubah dengan `KSU_MAX_MANAGERS=1..16`).
 - Hanya UID aplikasi asli (10000-19999) yang bisa menjadi manager.
-- Secara bawaan hanya **pemilik (user 0)** yang bisa memakai manager. Salinan di user sekunder atau dual apps ditolak. Build dengan `KSU_MANAGER_ALL_USERS=1` untuk mengizinkan semua user.
+- Manager dikenali di **semua user** (Work Profile / Private Space / dual apps). Build dengan `KSU_MANAGER_OWNER_ONLY=1` untuk membatasi hanya pemilik (user 0).
 - Panggilan driver yang khusus manager juga menolak kernel thread dan proses yang euid-nya berbeda dari uid.
 - Daftar tanda tangan bisa diganti lewat `KSU_NEXT_MANAGER_LIST` (format: `<ukuran sertifikat>:<sha256 sertifikat>`, dipisah koma).
 
