@@ -19,4 +19,4 @@ jobs:
         run: |
           git remote add gitlab "https://oauth2:${GITLAB_TOKEN}@gitlab.com/cryo-kernel-group/Cryo-Kernel-source.git"
           git config http.postBuffer 524288000
-          git push gitlab HEAD:refs/heads/GKICA
+          git push gitlab HEAD:refs/heads/Cryo
