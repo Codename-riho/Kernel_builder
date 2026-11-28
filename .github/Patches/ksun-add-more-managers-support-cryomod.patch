@@ -1,4 +1,4 @@
-From cc5bec6ecb1a52cc52cafe8d22baf9c88d61c082 Mon Sep 17 00:00:00 2001
+From 3140d037745c4ffd861499afce7573e3cf052679 Mon Sep 17 00:00:00 2001
 From: Dyatz <Codename-riho@github.com>
 Date: Sun, 15 Nov 2026 21:49:10 +0000
 Subject: [PATCH] kernel: add multi-manager support (hard cap 1, signature
@@ -10,9 +10,10 @@ to be crowned at a time.
 
 - apk_sign.c: read the APK signing certificate and hash it once, then
   match that single hash against the whole signature list instead of
-  reopening/re-hashing the APK for every entry; log the certificate
-  hash of every candidate that is not trusted (the original code did
-  this) so a manager that never gets crowned can be traced from dmesg
+  reopening/re-hashing the APK for every entry; the per-APK candidate
+  log (package name + certificate hash) is silent by default and only
+  printed by CONFIG_KSU_DEBUG or KSU_MANAGER_TRACE=1 builds, so a
+  manager that never gets crowned can still be traced from dmesg
 - manager_identity.h: manager slot holding plain app id, hard cap
   of 1 (any -DKSU_MAX_MANAGERS override is discarded), owner-only by
   default (KSU_MANAGER_ALL_USERS=1 to allow every user, matched on the
@@ -36,23 +37,24 @@ to be crowned at a time.
   caller is a crowned manager
 - allowlist.c: skip umount for crowned manager
 - Kbuild: extended signature list, KSU_NEXT_MANAGER_EXTRA appends more
-  signatures to the list, do not pin KSU_MANAGER_PACKAGE
+  signatures to the list, KSU_MANAGER_TRACE=1 enables the candidate log,
+  do not pin KSU_MANAGER_PACKAGE
 ---
- kernel/Kbuild                     |  27 ++-
- kernel/manager/apk_sign.c         | 175 +++++++++++++++----
+ kernel/Kbuild                     |  34 +++-
+ kernel/manager/apk_sign.c         | 183 ++++++++++++++++----
  kernel/manager/manager_identity.h | 166 ++++++++++++++++--
  kernel/manager/throne_tracker.c   | 279 +++++++++++++++++++++++++++++-
  kernel/manager/throne_tracker.h   |  14 ++
  kernel/policy/allowlist.c         |   2 +-
  kernel/supercall/dispatch.c       |   5 +-
  kernel/supercall/supercall.c      |   6 +-
- 8 files changed, 615 insertions(+), 59 deletions(-)
+ 8 files changed, 630 insertions(+), 59 deletions(-)
 
 diff --git a/kernel/Kbuild b/kernel/Kbuild
-index cf96240..3b51e7f 100644
+index cf96240..6953dd6 100644
 --- a/kernel/Kbuild
 +++ b/kernel/Kbuild
-@@ -220,10 +220,33 @@ KSU_NEW_DCACHE_FLUSH := $(shell grep -q __flush_dcache_area $(srctree)/arch/arm6
+@@ -220,10 +220,40 @@ KSU_NEW_DCACHE_FLUSH := $(shell grep -q __flush_dcache_area $(srctree)/arch/arm6
  $(info -- KernelSU-Next new DCACHE flush: $(KSU_NEW_DCACHE_FLUSH))
  
  ifndef KSU_NEXT_MANAGER_LIST
@@ -72,6 +74,13 @@ index cf96240..3b51e7f 100644
 +$(info -- KernelSU-Next Manager extra signatures: $(KSU_NEXT_MANAGER_EXTRA))
 +endif
 +
++# Log diagnosis per-APK (nama paket + hash sertifikat tiap app) senyap secara default.
++# KSU_MANAGER_TRACE=1 menyalakannya untuk build debug (CONFIG_KSU_DEBUG juga menyalakannya).
++ifdef KSU_MANAGER_TRACE
++ccflags-y += -DKSU_MANAGER_TRACE=1
++$(info -- KernelSU-Next Manager: per-APK trace log enabled)
++endif
++
 +# Multi-manager: semua signature di atas dipercaya, tetapi paling banyak 1 manager aktif.
 +# Secara default hanya owner (user 0) yang boleh memakai manager; set KSU_MANAGER_ALL_USERS=1 untuk semua user.
 +ifdef KSU_MANAGER_ALL_USERS
@@ -89,7 +98,7 @@ index cf96240..3b51e7f 100644
  ccflags-y += -DKSU_MANAGER_PACKAGE=\"$(KSU_MANAGER_PACKAGE)\"
  $(info -- KernelSU-Next Manager package name: $(KSU_MANAGER_PACKAGE))
 diff --git a/kernel/manager/apk_sign.c b/kernel/manager/apk_sign.c
-index 327b326..96223d9 100644
+index 327b326..c9f8568 100644
 --- a/kernel/manager/apk_sign.c
 +++ b/kernel/manager/apk_sign.c
 @@ -28,6 +28,12 @@ struct sdesc {
@@ -170,7 +179,7 @@ index 327b326..96223d9 100644
  		} else if (id != 0x42726577u) { // APK verity padding
  			// https://cs.android.com/android/platform/superproject/+/android-latest-release:tools/apksig/src/main/java/com/android/apksig/internal/apk/ApkSigningBlockUtils.java;l=102;drc=ebe4dfd4fd6550c949a6c7c2427484bf5e96500b
  #ifdef CONFIG_KSU_DEBUG
-@@ -328,27 +322,138 @@ int get_pkg_from_apk_dir_path(char *pkg, const char *path)
+@@ -328,27 +322,146 @@ int get_pkg_from_apk_dir_path(char *pkg, const char *path)
  	return 0;
  }
  
@@ -286,6 +295,10 @@ index 327b326..96223d9 100644
 +	return false;
 +}
 +
++#if defined(CONFIG_KSU_DEBUG) || defined(KSU_MANAGER_TRACE)
++#define KSU_TRACE_CANDIDATES 1
++#endif
++
 +bool is_manager_apk(char *path)
 +{
 +	unsigned char cert[CERT_MAX_LENGTH];
@@ -297,7 +310,9 @@ index 327b326..96223d9 100644
 +	if (!get_v2_certificate(path, cert, &cert_size)) {
 +		// no v2 signing block, a v3-only signature or a certificate over
 +		// CERT_MAX_LENGTH: such an APK can never be matched against the list
-+		pr_info("KernelSU: manager candidate %s: no usable v2 certificate\n", path);
++#ifdef KSU_TRACE_CANDIDATES
++		pr_info("manager candidate %s: no usable v2 certificate\n", path);
++#endif
 +		return false;
 +	}
 +
@@ -314,11 +329,13 @@ index 327b326..96223d9 100644
 +		return true;
  	}
  
-+	// The original code printed the certificate hash of every candidate; keep that
-+	// so a manager that is not crowned can be traced: the hash printed here is
-+	// exactly what has to be added to KSU_NEXT_MANAGER_EXTRA.
-+	pr_info("KernelSU: manager candidate %s: cert size=0x%x sha256=%s not trusted\n",
++	// Per-APK trace (package names and certificate hashes of every installed app):
++	// silent by default. Debug builds (CONFIG_KSU_DEBUG) or KSU_MANAGER_TRACE=1
++	// print it; the hash is exactly what goes into KSU_NEXT_MANAGER_EXTRA.
++#ifdef KSU_TRACE_CANDIDATES
++	pr_info("manager candidate %s: cert size=0x%x sha256=%s not trusted\n",
 +		path, cert_size, hash_str);
++#endif
  	return false;
  }
 diff --git a/kernel/manager/manager_identity.h b/kernel/manager/manager_identity.h
@@ -532,7 +549,7 @@ index 1268f44..943ba10 100644
  #endif
  
 diff --git a/kernel/manager/throne_tracker.c b/kernel/manager/throne_tracker.c
-index 8642906..cd58374 100644
+index 8642906..49d5aee 100644
 --- a/kernel/manager/throne_tracker.c
 +++ b/kernel/manager/throne_tracker.c
 @@ -4,6 +4,7 @@
@@ -875,7 +892,7 @@ index 8642906..cd58374 100644
 +		if (manager_drop_stale())
 +			search_manager("/data/app", 2, &uid_list);
 +		if (!ksu_is_manager_appid_valid())
-+			pr_info("no trusted manager APK found (see the sha256 lines above)\n");
++			pr_info("no trusted manager APK found (build with KSU_MANAGER_TRACE=1 to list the candidates)\n");
 +		pr_info("Search manager finished\n");
 +	}
 +#endif

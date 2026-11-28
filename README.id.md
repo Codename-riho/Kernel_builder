@@ -51,7 +51,7 @@ Cryo Kernel membawa patch yang membuat kernel memercayai lebih dari satu tanda t
 - Secara bawaan hanya **pemilik (user 0)** yang bisa memakai manager. Salinan di user sekunder atau dual apps ditolak. Build dengan `KSU_MANAGER_ALL_USERS=1` untuk mengizinkan semua user.
 - Panggilan driver yang khusus manager juga menolak kernel thread dan proses yang euid-nya berbeda dari uid.
 - Daftar tanda tangan bisa diganti lewat `KSU_NEXT_MANAGER_LIST` (format: `<ukuran sertifikat>:<sha256 sertifikat>`, dipisah koma).
-- Tanda tangan bisa **ditambahkan** ke daftar bawaan lewat `KSU_NEXT_MANAGER_EXTRA` (format sama). Jika manager menampilkan "tidak ada driver", jalankan `dmesg | grep "manager candidate"`: setiap APK yang dipindai dicatat bersama `sha256` sertifikatnya, dan hash itulah yang dimasukkan ke `KSU_NEXT_MANAGER_EXTRA`.
+- Tanda tangan bisa **ditambahkan** ke daftar bawaan lewat `KSU_NEXT_MANAGER_EXTRA` (format sama). Log kandidat per-APK (nama paket dan hash sertifikat semua app terpasang) senyap secara default. Untuk build debug set `KSU_MANAGER_TRACE=1` (atau aktifkan `CONFIG_KSU_DEBUG`), lalu jalankan `dmesg | grep "manager candidate"`: `sha256` manager yang tidak dipercaya itulah yang dimasukkan ke `KSU_NEXT_MANAGER_EXTRA`. Jangan biarkan `KSU_MANAGER_TRACE` aktif di build rilis.
 
 **Penting:** dalam praktiknya pakai **satu aplikasi manager saja dalam satu waktu**. Semua manager berbagi satu `/data/adb/ksud`, dan manager dengan protokol ioctl yang berbeda dari driver KernelSU-Next tidak akan berfungsi. Setiap manager aktif punya kendali root penuh, jadi pasang hanya manager yang Anda percaya.
 
