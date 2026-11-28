@@ -16,9 +16,7 @@ concurrency:
   group: cryo-build-${{ github.ref }}
   cancel-in-progress: false
 
-on: 
-  schedule:
-    - cron: "0 17 * * 5"
+on:
   workflow_dispatch:
      inputs:
       kernel_variant:
