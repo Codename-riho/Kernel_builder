@@ -1,0 +1,22 @@
+name: Mirror GKICA to GitLab
+
+on:
+  workflow_dispatch:
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: GKICA
+          fetch-depth: 0
+
+      - name: Push to GitLab
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          git remote add gitlab "https://oauth2:${GITLAB_TOKEN}@gitlab.com/cryo-kernel-group/Cryo-Kernel-source.git"
+          git config http.postBuffer 524288000
+          git push gitlab HEAD:refs/heads/GKICA
